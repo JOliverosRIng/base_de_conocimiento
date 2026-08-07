@@ -432,7 +432,7 @@ class PDFPreprocessor:
 # Función de salida: process_pdf
 # ----------------------------------------------------------------------
 def process_pdf(pdf_path: str, fenomeno: int,
-                encoder_name: str = "intfloat/multilingual-e5-base") -> str:
+                fuente: str | None = None, encoder_name: str = "intfloat/multilingual-e5-base") -> str:
     """
     Procesa un archivo PDF y devuelve el JSONL con los chunks del archivo.
 
@@ -453,15 +453,16 @@ def process_pdf(pdf_path: str, fenomeno: int,
         un objeto JSON con los campos de la Tabla 1 del documento guía.
     """
     preprocesador = PDFPreprocessor(encoder_name=encoder_name)
-    return preprocesador.procesar_a_jsonl(pdf_path, fenomeno)
+    return preprocesador.procesar_a_jsonl(pdf_path, fenomeno, fuente)
 
 
 if __name__ == "__main__":
     # Pequeña demostración de uso (requiere un PDF real en la ruta dada).
     import sys
-    if len(sys.argv) >= 3:
+    if len(sys.argv) > 3:
         ruta = sys.argv[1]
         fen = int(sys.argv[2])
-        print(process_pdf(ruta, fen))
+        fuente = sys.argv[3] 
+        print(process_pdf(ruta, fen,fuente))
     else:
-        print("Uso: python pdf_preprocessor.py <ruta_pdf> <fenomeno>")
+        print("Uso: python pdf_preprocessor.py <ruta_pdf> <fenomeno> <fuente>")
