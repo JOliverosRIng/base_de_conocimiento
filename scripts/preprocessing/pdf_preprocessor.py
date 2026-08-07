@@ -124,16 +124,17 @@ class PDFPreprocessor:
         texto = unicodedata.normalize("NFC", texto)
         texto = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", texto)
 
-        # Quitar marcadores de página tipo '!96 !', '! 100 !', '!101' que
-        # el extractor de PDF intercala y que confunden a pysbd, haciéndole
-        # tratar bloques enteros como una sola 'oración'.
+        # Quitar marcadores de página tipo '!96 !', '! 100 !', '!101'
         texto = re.sub(r"!\s*\d+\s*!?", " ", texto)
-        # Colapsar secuencias de signos '!' sueltos que quedan como ruido.
+        # NUEVO: quitar encabezados repetidos '! AI INDEX, NOVEMBER 2017'
+        texto = re.sub(
+            r"!\s*[A-ZÁÉÍÓÚÑ][A-ZÁÉÍÓÚÑ0-9,.\s]{3,60}?\d{4}", " ", texto
+        )
+        # Colapsar secuencias de signos '!' sueltos
         texto = re.sub(r"\s*!\s*!\s*", " ", texto)
+        texto = re.sub(r"\s+!\s+", " ", texto)   # NUEVO
 
-        # Colapsar espacios múltiples dejados por las sustituciones.
         texto = re.sub(r"[ \t]{2,}", " ", texto)
-
         lineas = [ln.strip() for ln in texto.splitlines() if ln.strip()]
         return "\n".join(lineas)
 
@@ -299,70 +300,68 @@ class PDFPreprocessor:
     
 
     def _chunk_texto(self, texto: str, idioma: str,
-                     solape_palabras: int = 50) -> list[str]:
-        """Divide el texto en fragmentos con ventana deslizante y solape:
-          1. max_palabras (250) y max_tokens (250) como techo por chunk.
-          2. Completitud lingüística: nunca se corta una oración.
-          3. Cada chunk se solapa con el siguiente hasta 'solape_palabras'
-             (50) palabras, retrocediendo por oraciones completas para no
-             partir frases en la zona de solape.
+                     max_palabras_ventana: int = 250,
+                     solape_palabras: int = 80) -> list[str]:
+        """Divide el texto con ventana deslizante y solape:
+          1. Cada ventana tiene como máximo 'max_palabras_ventana' palabras
+             (250) — puede ser MENOR para no cortar oraciones.
+          2. También respeta el techo de tokens (max_tokens).
+          3. Completitud lingüística: la ventana solo agrupa oraciones
+             completas; nunca parte una frase.
+          4. Cada chunk se solapa con el siguiente hasta 'solape_palabras'
+             (80) — puede ser MENOR, retrocediendo por oraciones completas.
         Devuelve una lista de cadenas (el texto de cada chunk)."""
         lang = idioma if idioma in ("es", "en", "pt") else "es"
         segmentador = pysbd.Segmenter(language=lang, clean=False)
         oraciones = [o.strip() for o in segmentador.segment(texto) if o.strip()]
-
-        # Pre-cálculo de palabras y tokens por oración (evita recomputar).
-        info = []
-        for o in oraciones:
-            info.append((o, len(o.split()), self._contar_tokens(o)))
-
+ 
+        # Pre-cálculo de palabras/tokens por oración.
+        info = [(o, len(o.split()), self._contar_tokens(o)) for o in oraciones]
+        n = len(info)
+ 
+        # El solape no puede ser mayor o igual que la ventana.
+        solape_palabras = min(solape_palabras, max_palabras_ventana - 1)
+ 
         chunks = []
         i = 0
-        n = len(info)
-
         while i < n:
             actual, pal, tok = [], 0, 0
             j = i
-
-            # Llenar la ventana con oraciones completas hasta el techo.
+ 
             while j < n:
                 oracion, n_pal, n_tok = info[j]
-
-                # Oración individual que excede el techo: se parte aparte
-                # (respeta oraciones/cláusulas, no fuerza el llenado).
-                if n_pal > self.max_palabras or n_tok > self.max_tokens:
+ 
+                # Oración individual que excede el techo de la ventana o de
+                # tokens: se parte aparte (respeta cláusulas, no la mete cruda).
+                if n_pal > max_palabras_ventana or n_tok > self.max_tokens:
                     if actual:
-                        break  # cerrar lo acumulado; la trataremos sola luego
+                        break  # primero cerramos lo acumulado
                     chunks.extend(self._partir_oracion_larga(oracion))
                     j += 1
                     i = j
-                    actual = None  # marca: ya se emitió, no cerrar de nuevo
+                    actual = None  # marca: bloque ya emitido
                     break
-
-                # Si la siguiente oración no cabe, cerrar la ventana.
-                if (pal + n_pal > self.max_palabras) or (tok + n_tok > self.max_tokens):
+ 
+                # Si la siguiente oración no cabe, cerrar la ventana aquí.
+                if (pal + n_pal > max_palabras_ventana) or (tok + n_tok > self.max_tokens):
                     break
-
+ 
                 actual.append(oracion)
                 pal += n_pal
                 tok += n_tok
                 j += 1
-
-            # Si el bloque se emitió por partición, seguir sin solape.
+ 
+            # Si el bloque se emitió por partición, continuar sin solape.
             if actual is None:
                 continue
-
+ 
             if actual:
                 chunks.append(" ".join(actual))
-
-            # Si llegamos al final, terminamos.
+ 
             if j >= n:
                 break
-
-            # --- Retroceso para el solape ---
-            # Contar hacia atrás oraciones completas desde el final de la
-            # ventana hasta acumular ~solape_palabras, y arrancar la próxima
-            # ventana en esa posición. Así el solape respeta oraciones.
+ 
+            # --- Retroceso para el solape (por oraciones completas) ---
             solape_acum = 0
             inicio_siguiente = j
             k = j - 1
@@ -373,11 +372,10 @@ class PDFPreprocessor:
                 solape_acum += kp
                 inicio_siguiente = k
                 k -= 1
-
-            # Garantía de avance: nunca retroceder al mismo inicio (evita
-            # bucle infinito si una sola oración llena casi toda la ventana).
+ 
+            # Garantía de avance: nunca quedarse en el mismo inicio.
             i = inicio_siguiente if inicio_siguiente > i else j
-
+ 
         return chunks
     
 
