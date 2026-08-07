@@ -19,3 +19,6 @@ mapbox-vector-tile   # Decodificación de Mapbox Vector Tiles (.pbf)
 langdetect       # Detección automática de idioma (es / en / pt)
 transformers     # Tokenizer del encoder (conteo de tokens)
 pysbd            # Segmentación de oraciones multilingüe
+
+# --- Utilidades ---
+json
