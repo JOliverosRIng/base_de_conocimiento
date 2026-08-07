@@ -118,9 +118,22 @@ class PDFPreprocessor:
     @staticmethod
     def _limpiar_texto(texto: str) -> str:
         """Normaliza a UTF-8 (NFC), elimina caracteres de control
-        invisibles y colapsa espacios/saltos de línea redundantes."""
+        invisibles, quita marcadores de página ruidosos (p. ej. '!96 !')
+        que rompen el segmentador de oraciones, y colapsa espacios/saltos
+        de línea redundantes."""
         texto = unicodedata.normalize("NFC", texto)
         texto = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", texto)
+
+        # Quitar marcadores de página tipo '!96 !', '! 100 !', '!101' que
+        # el extractor de PDF intercala y que confunden a pysbd, haciéndole
+        # tratar bloques enteros como una sola 'oración'.
+        texto = re.sub(r"!\s*\d+\s*!?", " ", texto)
+        # Colapsar secuencias de signos '!' sueltos que quedan como ruido.
+        texto = re.sub(r"\s*!\s*!\s*", " ", texto)
+
+        # Colapsar espacios múltiples dejados por las sustituciones.
+        texto = re.sub(r"[ \t]{2,}", " ", texto)
+
         lineas = [ln.strip() for ln in texto.splitlines() if ln.strip()]
         return "\n".join(lineas)
 
@@ -209,19 +222,59 @@ class PDFPreprocessor:
     # Chunking (Sección 3)
     # ------------------------------------------------------------------
     def _partir_oracion_larga(self, oracion: str) -> list[str]:
-        """Parte una 'oración' demasiado larga (normalmente un bloque que el
-        segmentador no supo dividir) en sub-fragmentos que respeten los
-        límites. Primero intenta por fronteras suaves (; : ,); si una parte
-        aún excede, hace corte duro por palabras como último recurso.
-        Así se evita que el texto quede cortado a media frase al mostrarse."""
-        partes = re.split(r"(?<=[;:,])\s+", oracion.strip())
+        """Parte un bloque que el segmentador entregó como una sola 'oración'
+        pero que excede los límites. Estrategia, de más a menos preferible:
+          1. Re-segmentar por puntos/fin de oración que pysbd no detectó.
+          2. Si una oración real aún excede, partir por fronteras suaves
+             (; :) y luego comas, agrupando SIN superar el límite.
+          3. Solo si una sola cláusula sin puntuación interna sigue siendo
+             más grande que el límite, corte duro por palabras (último
+             recurso inevitable).
+        Nunca deja una unidad partida entre dos fragmentos salvo el caso 3."""
+        # Paso 1: reintentar separar oraciones por signos de fin de oración
+        # (punto, interrogación, exclamación) seguidos de espacio y mayúscula.
+        unidades = re.split(r"(?<=[.?])\s+(?=[A-ZÁÉÍÓÚÑ])", oracion.strip())
+        unidades = [u.strip() for u in unidades if u.strip()]
+
+        subfrags, actual, pal, tok = [], [], 0, 0
+        for unidad in unidades:
+            n_pal = len(unidad.split())
+            n_tok = self._contar_tokens(unidad)
+
+            # Si esta unidad todavía excede, intentar dividirla por cláusulas.
+            if n_pal > self.max_palabras or n_tok > self.max_tokens:
+                if actual:
+                    subfrags.append(" ".join(actual))
+                    actual, pal, tok = [], 0, 0
+                subfrags.extend(self._partir_por_clausulas(unidad))
+                continue
+
+            # Cerrar el fragmento en curso si la unidad no cabe entera.
+            if (pal + n_pal > self.max_palabras) or (tok + n_tok > self.max_tokens):
+                subfrags.append(" ".join(actual))
+                actual, pal, tok = [], 0, 0
+
+            actual.append(unidad)
+            pal += n_pal
+            tok += n_tok
+
+        if actual:
+            subfrags.append(" ".join(actual))
+
+        return subfrags
+
+    def _partir_por_clausulas(self, texto: str) -> list[str]:
+        """Divide un texto que no tiene fin de oración claro usando fronteras
+        suaves (; :) y comas. Como último recurso, corte por palabras. No
+        fuerza el llenado: cierra en cuanto la siguiente cláusula no cabe."""
+        partes = re.split(r"(?<=[;:,])\s+", texto.strip())
 
         subfrags, actual, pal, tok = [], [], 0, 0
         for parte in partes:
             n_pal = len(parte.split())
             n_tok = self._contar_tokens(parte)
 
-            # Si una sola cláusula todavía excede, corte duro por palabras.
+            # Cláusula sin puntuación interna que aún excede: corte por palabras.
             if n_pal > self.max_palabras or n_tok > self.max_tokens:
                 if actual:
                     subfrags.append(" ".join(actual))
@@ -333,7 +386,7 @@ class PDFPreprocessor:
 
 
 # ----------------------------------------------------------------------
-# Función de conveniencia solicitada: process_pdf
+# Función de salida: process_pdf
 # ----------------------------------------------------------------------
 def process_pdf(pdf_path: str, fenomeno: int,
                 encoder_name: str = "intfloat/multilingual-e5-base") -> str:
