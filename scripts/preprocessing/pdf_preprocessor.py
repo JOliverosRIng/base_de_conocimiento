@@ -296,47 +296,90 @@ class PDFPreprocessor:
             subfrags.append(" ".join(actual))
 
         return subfrags
+    
 
-    def _chunk_texto(self, texto: str, idioma: str) -> list[str]:
-        """Divide el texto en fragmentos respetando:
-          1. max_palabras   2. max_tokens   3. completitud lingüística.
+    def _chunk_texto(self, texto: str, idioma: str,
+                     solape_palabras: int = 50) -> list[str]:
+        """Divide el texto en fragmentos con ventana deslizante y solape:
+          1. max_palabras (250) y max_tokens (250) como techo por chunk.
+          2. Completitud lingüística: nunca se corta una oración.
+          3. Cada chunk se solapa con el siguiente hasta 'solape_palabras'
+             (50) palabras, retrocediendo por oraciones completas para no
+             partir frases en la zona de solape.
         Devuelve una lista de cadenas (el texto de cada chunk)."""
         lang = idioma if idioma in ("es", "en", "pt") else "es"
         segmentador = pysbd.Segmenter(language=lang, clean=False)
         oraciones = [o.strip() for o in segmentador.segment(texto) if o.strip()]
 
+        # Pre-cálculo de palabras y tokens por oración (evita recomputar).
+        info = []
+        for o in oraciones:
+            info.append((o, len(o.split()), self._contar_tokens(o)))
+
         chunks = []
-        actual, pal, tok = [], 0, 0
+        i = 0
+        n = len(info)
 
-        for oracion in oraciones:
-            n_pal = len(oracion.split())
-            n_tok = self._contar_tokens(oracion)
+        while i < n:
+            actual, pal, tok = [], 0, 0
+            j = i
 
-            # Caso borde: una oración sola ya excede algún límite. Esto suele
-            # ocurrir cuando el segmentador falla con texto ruidoso de PDF y
-            # trata un bloque grande como una sola "oración". En vez de
-            # emitirla (y que quede cortada al mostrarse), se parte por
-            # fronteras suaves (; : ,) y, como último recurso, por palabras.
-            if n_pal > self.max_palabras or n_tok > self.max_tokens:
-                if actual:
-                    chunks.append(" ".join(actual))
-                    actual, pal, tok = [], 0, 0
-                chunks.extend(self._partir_oracion_larga(oracion))
+            # Llenar la ventana con oraciones completas hasta el techo.
+            while j < n:
+                oracion, n_pal, n_tok = info[j]
+
+                # Oración individual que excede el techo: se parte aparte
+                # (respeta oraciones/cláusulas, no fuerza el llenado).
+                if n_pal > self.max_palabras or n_tok > self.max_tokens:
+                    if actual:
+                        break  # cerrar lo acumulado; la trataremos sola luego
+                    chunks.extend(self._partir_oracion_larga(oracion))
+                    j += 1
+                    i = j
+                    actual = None  # marca: ya se emitió, no cerrar de nuevo
+                    break
+
+                # Si la siguiente oración no cabe, cerrar la ventana.
+                if (pal + n_pal > self.max_palabras) or (tok + n_tok > self.max_tokens):
+                    break
+
+                actual.append(oracion)
+                pal += n_pal
+                tok += n_tok
+                j += 1
+
+            # Si el bloque se emitió por partición, seguir sin solape.
+            if actual is None:
                 continue
 
-            # Si añadir la oración excede palabras O tokens, cerrar el chunk.
-            if (pal + n_pal > self.max_palabras) or (tok + n_tok > self.max_tokens):
+            if actual:
                 chunks.append(" ".join(actual))
-                actual, pal, tok = [], 0, 0
 
-            actual.append(oracion)
-            pal += n_pal
-            tok += n_tok
+            # Si llegamos al final, terminamos.
+            if j >= n:
+                break
 
-        if actual:
-            chunks.append(" ".join(actual))
+            # --- Retroceso para el solape ---
+            # Contar hacia atrás oraciones completas desde el final de la
+            # ventana hasta acumular ~solape_palabras, y arrancar la próxima
+            # ventana en esa posición. Así el solape respeta oraciones.
+            solape_acum = 0
+            inicio_siguiente = j
+            k = j - 1
+            while k > i:
+                _, kp, _ = info[k]
+                if solape_acum + kp > solape_palabras:
+                    break
+                solape_acum += kp
+                inicio_siguiente = k
+                k -= 1
+
+            # Garantía de avance: nunca retroceder al mismo inicio (evita
+            # bucle infinito si una sola oración llena casi toda la ventana).
+            i = inicio_siguiente if inicio_siguiente > i else j
 
         return chunks
+    
 
     # ------------------------------------------------------------------
     # API pública de la clase
