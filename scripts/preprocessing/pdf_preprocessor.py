@@ -208,6 +208,42 @@ class PDFPreprocessor:
     # ------------------------------------------------------------------
     # Chunking (Sección 3)
     # ------------------------------------------------------------------
+    def _partir_oracion_larga(self, oracion: str) -> list[str]:
+        """Parte una 'oración' demasiado larga (normalmente un bloque que el
+        segmentador no supo dividir) en sub-fragmentos que respeten los
+        límites. Primero intenta por fronteras suaves (; : ,); si una parte
+        aún excede, hace corte duro por palabras como último recurso.
+        Así se evita que el texto quede cortado a media frase al mostrarse."""
+        partes = re.split(r"(?<=[;:,])\s+", oracion.strip())
+
+        subfrags, actual, pal, tok = [], [], 0, 0
+        for parte in partes:
+            n_pal = len(parte.split())
+            n_tok = self._contar_tokens(parte)
+
+            # Si una sola cláusula todavía excede, corte duro por palabras.
+            if n_pal > self.max_palabras or n_tok > self.max_tokens:
+                if actual:
+                    subfrags.append(" ".join(actual))
+                    actual, pal, tok = [], 0, 0
+                palabras = parte.split()
+                for i in range(0, len(palabras), self.max_palabras):
+                    subfrags.append(" ".join(palabras[i:i + self.max_palabras]))
+                continue
+
+            if (pal + n_pal > self.max_palabras) or (tok + n_tok > self.max_tokens):
+                subfrags.append(" ".join(actual))
+                actual, pal, tok = [], 0, 0
+
+            actual.append(parte)
+            pal += n_pal
+            tok += n_tok
+
+        if actual:
+            subfrags.append(" ".join(actual))
+
+        return subfrags
+
     def _chunk_texto(self, texto: str, idioma: str) -> list[str]:
         """Divide el texto en fragmentos respetando:
           1. max_palabras   2. max_tokens   3. completitud lingüística.
@@ -223,13 +259,16 @@ class PDFPreprocessor:
             n_pal = len(oracion.split())
             n_tok = self._contar_tokens(oracion)
 
-            # Caso borde: una oración sola ya excede algún límite.
-            # Se emite entera para no cortarla (prioridad a la regla 3).
+            # Caso borde: una oración sola ya excede algún límite. Esto suele
+            # ocurrir cuando el segmentador falla con texto ruidoso de PDF y
+            # trata un bloque grande como una sola "oración". En vez de
+            # emitirla (y que quede cortada al mostrarse), se parte por
+            # fronteras suaves (; : ,) y, como último recurso, por palabras.
             if n_pal > self.max_palabras or n_tok > self.max_tokens:
                 if actual:
                     chunks.append(" ".join(actual))
                     actual, pal, tok = [], 0, 0
-                chunks.append(oracion)
+                chunks.extend(self._partir_oracion_larga(oracion))
                 continue
 
             # Si añadir la oración excede palabras O tokens, cerrar el chunk.
@@ -275,6 +314,7 @@ class PDFPreprocessor:
                 "fenomeno": fenomeno,
                 "posicion": posicion,
                 "num_tokens": self._contar_tokens(texto_chunk),
+                "num_palabras": len(texto_chunk.split()),
                 "texto": texto_chunk,
                 "idioma": idioma,
                 "fecha": meta["fecha"],
