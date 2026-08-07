@@ -118,9 +118,22 @@ class PDFPreprocessor:
     @staticmethod
     def _limpiar_texto(texto: str) -> str:
         """Normaliza a UTF-8 (NFC), elimina caracteres de control
-        invisibles y colapsa espacios/saltos de línea redundantes."""
+        invisibles, quita marcadores de página ruidosos (p. ej. '!96 !')
+        que rompen el segmentador de oraciones, y colapsa espacios/saltos
+        de línea redundantes."""
         texto = unicodedata.normalize("NFC", texto)
         texto = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", texto)
+
+        # Quitar marcadores de página tipo '!96 !', '! 100 !', '!101' que
+        # el extractor de PDF intercala y que confunden a pysbd, haciéndole
+        # tratar bloques enteros como una sola 'oración'.
+        texto = re.sub(r"!\s*\d+\s*!?", " ", texto)
+        # Colapsar secuencias de signos '!' sueltos que quedan como ruido.
+        texto = re.sub(r"\s*!\s*!\s*", " ", texto)
+
+        # Colapsar espacios múltiples dejados por las sustituciones.
+        texto = re.sub(r"[ \t]{2,}", " ", texto)
+
         lineas = [ln.strip() for ln in texto.splitlines() if ln.strip()]
         return "\n".join(lineas)
 
@@ -209,19 +222,59 @@ class PDFPreprocessor:
     # Chunking (Sección 3)
     # ------------------------------------------------------------------
     def _partir_oracion_larga(self, oracion: str) -> list[str]:
-        """Parte una 'oración' demasiado larga (normalmente un bloque que el
-        segmentador no supo dividir) en sub-fragmentos que respeten los
-        límites. Primero intenta por fronteras suaves (; : ,); si una parte
-        aún excede, hace corte duro por palabras como último recurso.
-        Así se evita que el texto quede cortado a media frase al mostrarse."""
-        partes = re.split(r"(?<=[;:,])\s+", oracion.strip())
+        """Parte un bloque que el segmentador entregó como una sola 'oración'
+        pero que excede los límites. Estrategia, de más a menos preferible:
+          1. Re-segmentar por puntos/fin de oración que pysbd no detectó.
+          2. Si una oración real aún excede, partir por fronteras suaves
+             (; :) y luego comas, agrupando SIN superar el límite.
+          3. Solo si una sola cláusula sin puntuación interna sigue siendo
+             más grande que el límite, corte duro por palabras (último
+             recurso inevitable).
+        Nunca deja una unidad partida entre dos fragmentos salvo el caso 3."""
+        # Paso 1: reintentar separar oraciones por signos de fin de oración
+        # (punto, interrogación, exclamación) seguidos de espacio y mayúscula.
+        unidades = re.split(r"(?<=[.?])\s+(?=[A-ZÁÉÍÓÚÑ])", oracion.strip())
+        unidades = [u.strip() for u in unidades if u.strip()]
+
+        subfrags, actual, pal, tok = [], [], 0, 0
+        for unidad in unidades:
+            n_pal = len(unidad.split())
+            n_tok = self._contar_tokens(unidad)
+
+            # Si esta unidad todavía excede, intentar dividirla por cláusulas.
+            if n_pal > self.max_palabras or n_tok > self.max_tokens:
+                if actual:
+                    subfrags.append(" ".join(actual))
+                    actual, pal, tok = [], 0, 0
+                subfrags.extend(self._partir_por_clausulas(unidad))
+                continue
+
+            # Cerrar el fragmento en curso si la unidad no cabe entera.
+            if (pal + n_pal > self.max_palabras) or (tok + n_tok > self.max_tokens):
+                subfrags.append(" ".join(actual))
+                actual, pal, tok = [], 0, 0
+
+            actual.append(unidad)
+            pal += n_pal
+            tok += n_tok
+
+        if actual:
+            subfrags.append(" ".join(actual))
+
+        return subfrags
+
+    def _partir_por_clausulas(self, texto: str) -> list[str]:
+        """Divide un texto que no tiene fin de oración claro usando fronteras
+        suaves (; :) y comas. Como último recurso, corte por palabras. No
+        fuerza el llenado: cierra en cuanto la siguiente cláusula no cabe."""
+        partes = re.split(r"(?<=[;:,])\s+", texto.strip())
 
         subfrags, actual, pal, tok = [], [], 0, 0
         for parte in partes:
             n_pal = len(parte.split())
             n_tok = self._contar_tokens(parte)
 
-            # Si una sola cláusula todavía excede, corte duro por palabras.
+            # Cláusula sin puntuación interna que aún excede: corte por palabras.
             if n_pal > self.max_palabras or n_tok > self.max_tokens:
                 if actual:
                     subfrags.append(" ".join(actual))
@@ -243,47 +296,90 @@ class PDFPreprocessor:
             subfrags.append(" ".join(actual))
 
         return subfrags
+    
 
-    def _chunk_texto(self, texto: str, idioma: str) -> list[str]:
-        """Divide el texto en fragmentos respetando:
-          1. max_palabras   2. max_tokens   3. completitud lingüística.
+    def _chunk_texto(self, texto: str, idioma: str,
+                     solape_palabras: int = 50) -> list[str]:
+        """Divide el texto en fragmentos con ventana deslizante y solape:
+          1. max_palabras (250) y max_tokens (250) como techo por chunk.
+          2. Completitud lingüística: nunca se corta una oración.
+          3. Cada chunk se solapa con el siguiente hasta 'solape_palabras'
+             (50) palabras, retrocediendo por oraciones completas para no
+             partir frases en la zona de solape.
         Devuelve una lista de cadenas (el texto de cada chunk)."""
         lang = idioma if idioma in ("es", "en", "pt") else "es"
         segmentador = pysbd.Segmenter(language=lang, clean=False)
         oraciones = [o.strip() for o in segmentador.segment(texto) if o.strip()]
 
+        # Pre-cálculo de palabras y tokens por oración (evita recomputar).
+        info = []
+        for o in oraciones:
+            info.append((o, len(o.split()), self._contar_tokens(o)))
+
         chunks = []
-        actual, pal, tok = [], 0, 0
+        i = 0
+        n = len(info)
 
-        for oracion in oraciones:
-            n_pal = len(oracion.split())
-            n_tok = self._contar_tokens(oracion)
+        while i < n:
+            actual, pal, tok = [], 0, 0
+            j = i
 
-            # Caso borde: una oración sola ya excede algún límite. Esto suele
-            # ocurrir cuando el segmentador falla con texto ruidoso de PDF y
-            # trata un bloque grande como una sola "oración". En vez de
-            # emitirla (y que quede cortada al mostrarse), se parte por
-            # fronteras suaves (; : ,) y, como último recurso, por palabras.
-            if n_pal > self.max_palabras or n_tok > self.max_tokens:
-                if actual:
-                    chunks.append(" ".join(actual))
-                    actual, pal, tok = [], 0, 0
-                chunks.extend(self._partir_oracion_larga(oracion))
+            # Llenar la ventana con oraciones completas hasta el techo.
+            while j < n:
+                oracion, n_pal, n_tok = info[j]
+
+                # Oración individual que excede el techo: se parte aparte
+                # (respeta oraciones/cláusulas, no fuerza el llenado).
+                if n_pal > self.max_palabras or n_tok > self.max_tokens:
+                    if actual:
+                        break  # cerrar lo acumulado; la trataremos sola luego
+                    chunks.extend(self._partir_oracion_larga(oracion))
+                    j += 1
+                    i = j
+                    actual = None  # marca: ya se emitió, no cerrar de nuevo
+                    break
+
+                # Si la siguiente oración no cabe, cerrar la ventana.
+                if (pal + n_pal > self.max_palabras) or (tok + n_tok > self.max_tokens):
+                    break
+
+                actual.append(oracion)
+                pal += n_pal
+                tok += n_tok
+                j += 1
+
+            # Si el bloque se emitió por partición, seguir sin solape.
+            if actual is None:
                 continue
 
-            # Si añadir la oración excede palabras O tokens, cerrar el chunk.
-            if (pal + n_pal > self.max_palabras) or (tok + n_tok > self.max_tokens):
+            if actual:
                 chunks.append(" ".join(actual))
-                actual, pal, tok = [], 0, 0
 
-            actual.append(oracion)
-            pal += n_pal
-            tok += n_tok
+            # Si llegamos al final, terminamos.
+            if j >= n:
+                break
 
-        if actual:
-            chunks.append(" ".join(actual))
+            # --- Retroceso para el solape ---
+            # Contar hacia atrás oraciones completas desde el final de la
+            # ventana hasta acumular ~solape_palabras, y arrancar la próxima
+            # ventana en esa posición. Así el solape respeta oraciones.
+            solape_acum = 0
+            inicio_siguiente = j
+            k = j - 1
+            while k > i:
+                _, kp, _ = info[k]
+                if solape_acum + kp > solape_palabras:
+                    break
+                solape_acum += kp
+                inicio_siguiente = k
+                k -= 1
+
+            # Garantía de avance: nunca retroceder al mismo inicio (evita
+            # bucle infinito si una sola oración llena casi toda la ventana).
+            i = inicio_siguiente if inicio_siguiente > i else j
 
         return chunks
+    
 
     # ------------------------------------------------------------------
     # API pública de la clase
@@ -333,10 +429,10 @@ class PDFPreprocessor:
 
 
 # ----------------------------------------------------------------------
-# Función de conveniencia solicitada: process_pdf
+# Función de salida: process_pdf
 # ----------------------------------------------------------------------
 def process_pdf(pdf_path: str, fenomeno: int,
-                encoder_name: str = "intfloat/multilingual-e5-base") -> str:
+                fuente: str | None = None, encoder_name: str = "intfloat/multilingual-e5-base") -> str:
     """
     Procesa un archivo PDF y devuelve el JSONL con los chunks del archivo.
 
@@ -357,15 +453,16 @@ def process_pdf(pdf_path: str, fenomeno: int,
         un objeto JSON con los campos de la Tabla 1 del documento guía.
     """
     preprocesador = PDFPreprocessor(encoder_name=encoder_name)
-    return preprocesador.procesar_a_jsonl(pdf_path, fenomeno)
+    return preprocesador.procesar_a_jsonl(pdf_path, fenomeno, fuente)
 
 
 if __name__ == "__main__":
     # Pequeña demostración de uso (requiere un PDF real en la ruta dada).
     import sys
-    if len(sys.argv) >= 3:
+    if len(sys.argv) > 3:
         ruta = sys.argv[1]
         fen = int(sys.argv[2])
-        print(process_pdf(ruta, fen))
+        fuente = sys.argv[3] 
+        print(process_pdf(ruta, fen,fuente))
     else:
-        print("Uso: python pdf_preprocessor.py <ruta_pdf> <fenomeno>")
+        print("Uso: python pdf_preprocessor.py <ruta_pdf> <fenomeno> <fuente>")
