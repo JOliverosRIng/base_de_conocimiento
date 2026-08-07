@@ -1,0 +1,21 @@
+# ============================================================
+# Dependencias de Python para los preprocesadores
+# (pdf_preprocessor.py y pbf_preprocessor.py)
+# CODEFEST AD ASTRA 2026 - Etapa 1
+# ------------------------------------------------------------
+# Instalar con:
+#     pip install -r requirements.txt
+# ============================================================
+
+# --- Extracción de PDF y OCR ---
+pymupdf          # Extracción de texto de PDF (se importa como 'pymupdf')
+pytesseract      # Interfaz Python para el motor OCR Tesseract
+pillow           # Manejo de imágenes (necesario para el OCR)
+
+# --- Extracción de PBF (mapas vectoriales) ---
+mapbox-vector-tile   # Decodificación de Mapbox Vector Tiles (.pbf)
+
+# --- Procesamiento de texto (comunes a ambos módulos) ---
+langdetect       # Detección automática de idioma (es / en / pt)
+transformers     # Tokenizer del encoder (conteo de tokens)
+pysbd            # Segmentación de oraciones multilingüe
