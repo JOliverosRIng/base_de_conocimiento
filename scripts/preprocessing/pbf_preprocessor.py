@@ -1,0 +1,406 @@
+"""
+pbf_preprocessor.py
+===================
+
+Módulo de preprocesamiento de PBF (Mapbox Vector Tiles / mapas vectoriales)
+para la Etapa 1 de CODEFEST AD ASTRA 2026.
+
+Uso básico
+----------
+    from pbf_preprocessor import process_pbf
+
+    jsonl = process_pbf("ruta/al/mapa.pbf", fenomeno=3)
+    # 'jsonl' es una cadena en formato JSON Lines: un chunk por línea.
+
+    with open("mapa.jsonl", "w", encoding="utf-8") as f:
+        f.write(jsonl)
+
+La clase PBFPreprocessor encapsula el flujo de las Secciones 2 y 3 del
+documento guía, adaptado a mapas vectoriales (Sección 2.1, apartado PBF):
+    - Decodificación del PBF con mapbox_vector_tile (con descompresión gzip
+      si aplica).
+    - Recorrido de capas y features, leyendo atributos como pares
+      'atributo: valor'.
+    - Deduplicación de elementos repetidos dentro del archivo.
+    - Limpieza, detección de idioma y asignación de doc_id.
+    - Chunking con ventana deslizante (máx. 250 palabras) y solape (máx. 80),
+      respetando completitud lingüística (idéntico al módulo PDF).
+
+Dependencias:
+    pip install mapbox-vector-tile langdetect transformers pysbd
+"""
+
+import re
+import json
+import gzip
+import hashlib
+import unicodedata
+
+import mapbox_vector_tile
+from langdetect import detect, DetectorFactory
+from transformers import AutoTokenizer
+import pysbd
+
+
+# Detección de idioma determinista (mismo resultado en cada corrida)
+DetectorFactory.seed = 0
+
+
+class PBFPreprocessor:
+    """
+    Preprocesa un archivo PBF (Mapbox Vector Tile) y produce chunks con el
+    contrato de salida exigido por la Tabla 1 del documento guía.
+
+    Parámetros del constructor
+    ---------------------------
+    encoder_name : str
+        Encoder de HuggingFace cuyo tokenizer se usa para contar tokens.
+        DEBE ser el mismo encoder con el que luego se generen los embeddings
+        (Sección 4.3). Por defecto, un modelo multilingüe de ejemplo.
+    max_palabras : int
+        Techo de palabras por chunk (por defecto 250).
+    max_tokens : int
+        Techo de tokens por chunk (por defecto 250).
+    separador_pares : str
+        Cadena que une los pares 'atributo: valor' de un mismo elemento.
+    """
+
+    def __init__(
+        self,
+        encoder_name: str = "intfloat/multilingual-e5-base",
+        max_palabras: int = 250,
+        max_tokens: int = 250,
+        separador_pares: str = " | ",
+    ):
+        self.max_palabras = max_palabras
+        self.max_tokens = max_tokens
+        self.separador_pares = separador_pares
+        # El tokenizer se carga una sola vez al crear el objeto.
+        self._tokenizer = AutoTokenizer.from_pretrained(encoder_name)
+
+    # ------------------------------------------------------------------
+    # Utilidades internas
+    # ------------------------------------------------------------------
+    def _contar_tokens(self, texto: str) -> int:
+        """Número de tokens según el tokenizer del encoder,
+        sin contar tokens especiales ([CLS], [SEP], etc.)."""
+        return len(self._tokenizer.encode(texto, add_special_tokens=False))
+
+    @staticmethod
+    def _asignar_doc_id(fuente: str) -> str:
+        """doc_id único y estable derivado de la fuente (misma fuente,
+        mismo doc_id en cada corrida)."""
+        hash_corto = hashlib.sha1(fuente.encode("utf-8")).hexdigest()[:8]
+        return f"DOC-{hash_corto}"
+
+    @staticmethod
+    def _limpiar_texto(texto: str) -> str:
+        """Normaliza a UTF-8 (NFC), elimina caracteres de control invisibles
+        y colapsa espacios/saltos de línea redundantes."""
+        texto = unicodedata.normalize("NFC", texto)
+        texto = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", texto)
+        texto = re.sub(r"[ \t]{2,}", " ", texto)
+        lineas = [ln.strip() for ln in texto.splitlines() if ln.strip()]
+        return "\n".join(lineas)
+
+    @staticmethod
+    def _detectar_idioma(texto: str) -> str:
+        """Detecta el idioma predominante. Devuelve 'desconocido' si el
+        texto es muy corto o si la detección falla."""
+        limpio = texto.strip()
+        if len(limpio.split()) < 5:
+            return "desconocido"
+        try:
+            return detect(limpio)
+        except Exception:
+            return "desconocido"
+
+    # ------------------------------------------------------------------
+    # Decodificación y extracción de texto del PBF
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _leer_bytes(ruta_pbf: str) -> bytes:
+        """Lee el PBF crudo; si viene comprimido con gzip, lo descomprime."""
+        with open(ruta_pbf, "rb") as f:
+            datos = f.read()
+        # Bytes mágicos de gzip: 0x1f 0x8b
+        if datos[:2] == b"\x1f\x8b":
+            datos = gzip.decompress(datos)
+        return datos
+
+    def _extraer_texto(self, ruta_pbf: str) -> str:
+        """Decodifica la tesela con mapbox_vector_tile y convierte los
+        atributos de cada feature del mapa en texto ('atributo: valor'),
+        recorriendo todas las capas. Descarta features duplicadas (mismo
+        conjunto de atributos repetido dentro del archivo).
+        """
+        datos = self._leer_bytes(ruta_pbf)
+        tesela = mapbox_vector_tile.decode(datos)
+
+        lineas = []
+        vistos = set()
+
+        for nombre_capa, capa in tesela.items():
+            for feature in capa.get("features", []):
+                propiedades = feature.get("properties", {})
+                if not propiedades:
+                    continue
+
+                pares = [
+                    f"{clave}: {valor}"
+                    for clave, valor in propiedades.items()
+                    if valor not in (None, "")
+                ]
+                if not pares:
+                    continue
+
+                texto_elemento = self.separador_pares.join(pares)
+
+                # Deduplicación dentro del archivo.
+                if texto_elemento in vistos:
+                    continue
+                vistos.add(texto_elemento)
+
+                # El nombre de la capa aporta contexto temático.
+                lineas.append(f"[{nombre_capa}] {texto_elemento}")
+
+        return "\n".join(lineas)
+
+    # ------------------------------------------------------------------
+    # Chunking (idéntico al módulo PDF: ventana deslizante + solape)
+    # ------------------------------------------------------------------
+    def _partir_oracion_larga(self, oracion: str) -> list[str]:
+        """Parte un bloque que el segmentador entregó como una sola 'oración'
+        pero que excede los límites. Estrategia, de más a menos preferible:
+          1. Re-segmentar por puntos/fin de oración que pysbd no detectó.
+          2. Si una oración real aún excede, partir por fronteras suaves
+             (; :) y luego comas, agrupando SIN superar el límite.
+          3. Solo si una sola cláusula sin puntuación interna sigue siendo
+             más grande que el límite, corte duro por palabras.
+        Nunca deja una unidad partida entre dos fragmentos salvo el caso 3."""
+        unidades = re.split(r"(?<=[.?])\s+(?=[A-ZÁÉÍÓÚÑ])", oracion.strip())
+        unidades = [u.strip() for u in unidades if u.strip()]
+
+        subfrags, actual, pal, tok = [], [], 0, 0
+        for unidad in unidades:
+            n_pal = len(unidad.split())
+            n_tok = self._contar_tokens(unidad)
+
+            if n_pal > self.max_palabras or n_tok > self.max_tokens:
+                if actual:
+                    subfrags.append(" ".join(actual))
+                    actual, pal, tok = [], 0, 0
+                subfrags.extend(self._partir_por_clausulas(unidad))
+                continue
+
+            if (pal + n_pal > self.max_palabras) or (tok + n_tok > self.max_tokens):
+                subfrags.append(" ".join(actual))
+                actual, pal, tok = [], 0, 0
+
+            actual.append(unidad)
+            pal += n_pal
+            tok += n_tok
+
+        if actual:
+            subfrags.append(" ".join(actual))
+
+        return subfrags
+
+    def _partir_por_clausulas(self, texto: str) -> list[str]:
+        """Divide un texto sin fin de oración claro usando fronteras suaves
+        (; :) y comas. Como último recurso, corte por palabras. No fuerza el
+        llenado: cierra en cuanto la siguiente cláusula no cabe."""
+        partes = re.split(r"(?<=[;:,])\s+", texto.strip())
+
+        subfrags, actual, pal, tok = [], [], 0, 0
+        for parte in partes:
+            n_pal = len(parte.split())
+            n_tok = self._contar_tokens(parte)
+
+            if n_pal > self.max_palabras or n_tok > self.max_tokens:
+                if actual:
+                    subfrags.append(" ".join(actual))
+                    actual, pal, tok = [], 0, 0
+                palabras = parte.split()
+                for i in range(0, len(palabras), self.max_palabras):
+                    subfrags.append(" ".join(palabras[i:i + self.max_palabras]))
+                continue
+
+            if (pal + n_pal > self.max_palabras) or (tok + n_tok > self.max_tokens):
+                subfrags.append(" ".join(actual))
+                actual, pal, tok = [], 0, 0
+
+            actual.append(parte)
+            pal += n_pal
+            tok += n_tok
+
+        if actual:
+            subfrags.append(" ".join(actual))
+
+        return subfrags
+
+    def _chunk_texto(self, texto: str, idioma: str,
+                     max_palabras_ventana: int = 250,
+                     solape_palabras: int = 80) -> list[str]:
+        """Divide el texto con ventana deslizante y solape:
+          1. Cada ventana tiene como máximo 'max_palabras_ventana' palabras
+             (250) — puede ser MENOR para no cortar oraciones.
+          2. También respeta el techo de tokens (max_tokens).
+          3. Completitud lingüística: la ventana solo agrupa oraciones
+             completas; nunca parte una frase.
+          4. Cada chunk se solapa con el siguiente hasta 'solape_palabras'
+             (80) — puede ser MENOR, retrocediendo por oraciones completas.
+        Devuelve una lista de cadenas (el texto de cada chunk)."""
+        #lang = idioma if idioma in ("es", "en", "pt") else "es"
+        # pysbd NO soporta portugués ('pt'); se usa español como respaldo,
+        # que comparte las reglas de puntuación para segmentar oraciones.
+        lang = idioma if idioma in ("es", "en") else "es"
+        segmentador = pysbd.Segmenter(language=lang, clean=False)
+        oraciones = [o.strip() for o in segmentador.segment(texto) if o.strip()]
+
+        # Pre-cálculo de palabras/tokens por oración.
+        info = [(o, len(o.split()), self._contar_tokens(o)) for o in oraciones]
+        n = len(info)
+
+        # El solape no puede ser mayor o igual que la ventana.
+        solape_palabras = min(solape_palabras, max_palabras_ventana - 1)
+
+        chunks = []
+        i = 0
+        while i < n:
+            actual, pal, tok = [], 0, 0
+            j = i
+
+            while j < n:
+                oracion, n_pal, n_tok = info[j]
+
+                # Oración individual que excede el techo de la ventana o de
+                # tokens: se parte aparte (respeta cláusulas, no la mete cruda).
+                if n_pal > max_palabras_ventana or n_tok > self.max_tokens:
+                    if actual:
+                        break  # primero cerramos lo acumulado
+                    chunks.extend(self._partir_oracion_larga(oracion))
+                    j += 1
+                    i = j
+                    actual = None  # marca: bloque ya emitido
+                    break
+
+                # Si la siguiente oración no cabe, cerrar la ventana aquí.
+                if (pal + n_pal > max_palabras_ventana) or (tok + n_tok > self.max_tokens):
+                    break
+
+                actual.append(oracion)
+                pal += n_pal
+                tok += n_tok
+                j += 1
+
+            # Si el bloque se emitió por partición, continuar sin solape.
+            if actual is None:
+                continue
+
+            if actual:
+                chunks.append(" ".join(actual))
+
+            if j >= n:
+                break
+
+            # --- Retroceso para el solape (por oraciones completas) ---
+            solape_acum = 0
+            inicio_siguiente = j
+            k = j - 1
+            while k > i:
+                _, kp, _ = info[k]
+                if solape_acum + kp > solape_palabras:
+                    break
+                solape_acum += kp
+                inicio_siguiente = k
+                k -= 1
+
+            # Garantía de avance: nunca quedarse en el mismo inicio.
+            i = inicio_siguiente if inicio_siguiente > i else j
+
+        return chunks
+
+    # ------------------------------------------------------------------
+    # API pública de la clase
+    # ------------------------------------------------------------------
+    def procesar(self, ruta_pbf: str, fenomeno: int,
+                 fuente: str | None = None, formato: str = "pbf") -> list[dict]:
+        """Procesa un PBF completo y devuelve la lista de chunks (dicts)
+        con todos los campos del contrato de salida (Tabla 1)."""
+        if fuente is None:
+            fuente = ruta_pbf
+
+        cuerpo = self._extraer_texto(ruta_pbf)
+        cuerpo = self._limpiar_texto(cuerpo)
+        idioma = self._detectar_idioma(cuerpo)
+        doc_id = self._asignar_doc_id(fuente)
+
+        chunks_texto = self._chunk_texto(cuerpo, idioma)
+
+        registros = []
+        for posicion, texto_chunk in enumerate(chunks_texto):
+            registros.append({
+                "doc_id": doc_id,
+                "chunk_id": f"{doc_id}-chunk-{posicion:03d}",
+                "fuente": fuente,
+                "formato": formato,
+                "fenomeno": fenomeno,
+                "posicion": posicion,
+                "num_tokens": self._contar_tokens(texto_chunk),
+                "num_palabras": len(texto_chunk.split()),
+                "texto": texto_chunk,
+                "idioma": idioma,
+                "fecha": "",     # los PBF no traen fecha interna
+                "titulo": "",    # ni título interno
+            })
+        return registros
+
+    def procesar_a_jsonl(self, ruta_pbf: str, fenomeno: int,
+                         fuente: str | None = None, formato: str = "pbf") -> str:
+        """Igual que procesar(), pero devuelve una cadena JSON Lines:
+        un objeto JSON por línea, sin separadores extra."""
+        registros = self.procesar(ruta_pbf, fenomeno, fuente, formato)
+        return "\n".join(json.dumps(r, ensure_ascii=False) for r in registros)
+
+
+# ----------------------------------------------------------------------
+# Función de salida: process_pbf
+# ----------------------------------------------------------------------
+def process_pbf(pbf_path: str, fenomeno: int,
+                fuente: str | None = None,
+                encoder_name: str = "intfloat/multilingual-e5-base") -> str:
+    """
+    Procesa un archivo PBF y devuelve el JSONL con los chunks del archivo.
+
+    Parámetros
+    ----------
+    pbf_path : str
+        Ruta al archivo PBF (Mapbox Vector Tile) a procesar.
+    fenomeno : int
+        Fenómeno temático al que pertenece el documento (1, 2 o 3).
+    fuente : str, opcional
+        Nombre/URL de la fuente. Si no se pasa, se usa la ruta del archivo.
+    encoder_name : str, opcional
+        Encoder de HuggingFace cuyo tokenizer se usa para contar tokens.
+        Debe coincidir con el encoder usado para generar los embeddings.
+
+    Retorna
+    -------
+    str
+        Cadena en formato JSON Lines (un chunk por línea), con los campos
+        de la Tabla 1 del documento guía.
+    """
+    preprocesador = PBFPreprocessor(encoder_name=encoder_name)
+    return preprocesador.procesar_a_jsonl(pbf_path, fenomeno, fuente)
+
+
+if __name__ == "__main__":
+    import sys
+    if len(sys.argv) > 3:
+        ruta = sys.argv[1]
+        fen = int(sys.argv[2])
+        fuente = sys.argv[3]
+        print(process_pbf(ruta, fen, fuente))
+    else:
+        print("Uso: python pbf_preprocessor.py <ruta_pbf> <fenomeno> <fuente>")
