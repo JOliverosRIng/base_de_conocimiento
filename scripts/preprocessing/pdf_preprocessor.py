@@ -137,6 +137,10 @@ class PDFPreprocessor:
         texto = re.sub(r"[ \t]{2,}", " ", texto)
         lineas = [ln.strip() for ln in texto.splitlines() if ln.strip()]
         return "\n".join(lineas)
+        """# NUEVO: normalizar TODOS los espacios en blanco (incluye saltos de
+        # línea y tabs) a un solo espacio, en todo el cuerpo del texto.
+        texto = re.sub(r"\s+", " ", texto)
+        return texto.strip()"""
 
     def _eliminar_boilerplate(self, texto: str) -> str:
         """Descarta líneas que coincidan con frases de plantilla."""
@@ -382,13 +386,20 @@ class PDFPreprocessor:
     # ------------------------------------------------------------------
     # Posprocesamiento de chunks (recorte de bordes cortados)
     # ------------------------------------------------------------------
-    def _posprocesar_chunk(self, texto: str) -> str:
+    def _posprocesar_chunk(self, texto: str, texto_anterior: str | None = None) -> str:
         """Recorta los bordes de un chunk SOLO si están cortados:
 
-        Regla 1 (inicio): si el texto empieza en minúscula (viene de media
-            oración), elimina todo hasta la primera secuencia '. Mayúscula'
-            y conserva desde esa mayúscula. Si no hay '. Mayúscula', usa la
-            primera ',' o ';' como punto de corte (sin exigir mayúscula).
+        Regla 1 (inicio): dos detecciones combinadas.
+            (a) Si el texto empieza en minúscula (viene de media oración),
+                elimina todo hasta la primera secuencia '. Mayúscula' y
+                conserva desde esa mayúscula. Si no hay '. Mayúscula', usa
+                la primera ',' o ';' como punto de corte.
+            (b) Lógica del solape (si hay chunk anterior): toma la frase
+                inicial hasta el primer punto (frase candidata) y la busca
+                en el chunk anterior. Si en el anterior esa frase NO viene
+                precedida por un '.', significa que es el final de una
+                oración cortada, y se elimina del inicio del chunk actual.
+                Al primer chunk (sin anterior) no se aplica (b).
 
         Regla 2 (final): si el texto NO termina en '.', '!' o '?' (oración
             incompleta), elimina la última oración que empieza tras un
@@ -400,27 +411,39 @@ class PDFPreprocessor:
         if not texto:
             return texto
 
-        # --- Regla 1: recortar inicio solo si empieza cortado (minúscula) ---
+        # --- Regla 1a: recortar inicio si empieza cortado (minúscula) ---
         if texto[0].islower():
-            # Buscar la primera secuencia '. Mayúscula'.
             m = re.search(r"\.\s+(?=[A-ZÁÉÍÓÚÑ])", texto)
             if m:
                 texto = texto[m.end():].lstrip()
             else:
-                # Respaldo: primera ',' o ';'.
                 m2 = re.search(r"[;,]\s+", texto)
                 if m2:
                     texto = texto[m2.end():].lstrip()
 
+        # --- Regla 1b: lógica del solape con el chunk anterior ---
+        if texto_anterior:
+            # Frase candidata: desde el inicio hasta el primer punto (incluido).
+            m_punto = re.search(r"\.", texto)
+            if m_punto:
+                candidata = texto[:m_punto.end()].strip()
+                # Buscar la frase candidata dentro del chunk anterior.
+                pos = texto_anterior.find(candidata)
+                if pos != -1:
+                    # Mirar el carácter no-espacio que antecede a la candidata.
+                    previo = texto_anterior[:pos].rstrip()
+                    # Si NO termina en '.', la candidata es un fragmento
+                    # cortado: se elimina del inicio del chunk actual.
+                    if previo and not previo.endswith("."):
+                        texto = texto[m_punto.end():].lstrip()
+
         # --- Regla 2: recortar final solo si termina cortado ---
         if texto and texto[-1] not in ".!?":
-            # Buscar el último '. Mayúscula' y cortar ahí (conservando el '.').
             matches = list(re.finditer(r"\.\s+(?=[A-ZÁÉÍÓÚÑ])", texto))
             if matches:
                 ultimo = matches[-1]
                 texto = texto[:ultimo.start() + 1].rstrip()
             else:
-                # Respaldo: última ',' o ';'.
                 matches2 = list(re.finditer(r"[;,]", texto))
                 if matches2:
                     ultimo2 = matches2[-1]
@@ -435,6 +458,8 @@ class PDFPreprocessor:
                  fuente: str | None = None, formato: str = "pdf") -> list[dict]:
         """Procesa un PDF completo y devuelve la lista de chunks (dicts)
         con todos los campos del contrato de salida (Tabla 1)."""
+        
+        
         if fuente is None:
             fuente = ruta_pdf  # por defecto, la fuente es la ruta del archivo
 
@@ -449,7 +474,8 @@ class PDFPreprocessor:
 
         registros = []
         for posicion, texto_chunk in enumerate(chunks_texto):
-            texto_chunk = self._posprocesar_chunk(texto_chunk)
+            anterior = chunks_texto[posicion - 1] if posicion > 0 else None
+            texto_chunk = self._posprocesar_chunk(texto_chunk, anterior)
             registros.append({
                 "doc_id": doc_id,
                 "chunk_id": f"{doc_id}-chunk-{posicion:03d}",
@@ -500,6 +526,7 @@ def process_pdf(pdf_path: str, fenomeno: int,
         Cadena en formato JSON Lines (un chunk por línea). Cada línea es
         un objeto JSON con los campos de la Tabla 1 del documento guía.
     """
+    
     preprocesador = PDFPreprocessor(encoder_name=encoder_name)
     return preprocesador.procesar_a_jsonl(pdf_path, fenomeno, fuente)
 
@@ -507,7 +534,9 @@ def process_pdf(pdf_path: str, fenomeno: int,
 if __name__ == "__main__":
     # Pequeña demostración de uso (requiere un PDF real en la ruta dada).
     import sys
+    
     if len(sys.argv) > 3:
+        print(f"paso 0.1")
         ruta = sys.argv[1]
         fen = int(sys.argv[2])
         fuente = sys.argv[3] 
