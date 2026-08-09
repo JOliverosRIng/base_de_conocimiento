@@ -90,12 +90,16 @@ class PDFPreprocessor:
         ocr_idiomas: str = "spa+eng+por",
         ocr_dpi: int = 200,
         min_caracteres_texto: int = 20,
+        debug_huge_token: bool = False,
     ):
         self.max_palabras = max_palabras
         self.max_tokens = max_tokens
         self.ocr_idiomas = ocr_idiomas
         self.ocr_dpi = ocr_dpi
         self.min_caracteres_texto = min_caracteres_texto
+        # Si es True, imprime los bloques que superan 512 tokens (los que
+        # disparan la advertencia del tokenizer) para diagnóstico.
+        self.debug_huge_token = debug_huge_token
 
         # El tokenizer se carga una sola vez al crear el objeto.
         self._tokenizer = AutoTokenizer.from_pretrained(encoder_name)
@@ -335,7 +339,18 @@ class PDFPreprocessor:
         oraciones = [o.strip() for o in segmentador.segment(texto) if o.strip()]
  
         # Pre-cálculo de palabras/tokens por oración.
-        info = [(o, len(o.split()), self._contar_tokens(o)) for o in oraciones]
+        info = []
+        for o in oraciones:
+            n_tok = self._contar_tokens(o)
+            # Debug: si un bloque supera el límite del modelo (512 tokens),
+            # es el que dispara la advertencia del tokenizer. Lo imprimimos.
+            if self.debug_huge_token and n_tok > 512:
+                print("=" * 70)
+                print(f"[DEBUG_HUGE_TOKEN] Bloque de {n_tok} tokens "
+                      f"({len(o.split())} palabras):")
+                print(o)
+                print("=" * 70)
+            info.append((o, len(o.split()), n_tok))
         n = len(info)
  
         # El solape no puede ser mayor o igual que la ventana.
@@ -527,7 +542,9 @@ class PDFPreprocessor:
 # Función de salida: process_pdf
 # ----------------------------------------------------------------------
 def process_pdf(pdf_path: str, fenomeno: int,
-                fuente: str | None = None, encoder_name: str = "intfloat/multilingual-e5-base") -> str:
+                fuente: str | None = None,
+                encoder_name: str = "intfloat/multilingual-e5-base",
+                debug_huge_token: bool = False) -> str:
     """
     Procesa un archivo PDF y devuelve el JSONL con los chunks del archivo.
 
@@ -540,6 +557,9 @@ def process_pdf(pdf_path: str, fenomeno: int,
     encoder_name : str, opcional
         Encoder de HuggingFace cuyo tokenizer se usa para contar tokens.
         Debe coincidir con el encoder usado para generar los embeddings.
+    debug_huge_token : bool, opcional
+        Si es True, imprime los bloques que superan 512 tokens (los que
+        disparan la advertencia del tokenizer) para diagnóstico.
 
     Retorna
     -------
@@ -547,7 +567,9 @@ def process_pdf(pdf_path: str, fenomeno: int,
         Cadena en formato JSON Lines (un chunk por línea). Cada línea es
         un objeto JSON con los campos de la Tabla 1 del documento guía.
     """
-    preprocesador = PDFPreprocessor(encoder_name=encoder_name)
+    preprocesador = PDFPreprocessor(
+        encoder_name=encoder_name, debug_huge_token=debug_huge_token
+    )
     return preprocesador.procesar_a_jsonl(pdf_path, fenomeno, fuente)
 
 
