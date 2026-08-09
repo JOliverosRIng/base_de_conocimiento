@@ -109,6 +109,25 @@ class PDFPreprocessor:
         return len(self._tokenizer.encode(texto, add_special_tokens=False))
 
     @staticmethod
+    def _ruta_relativa(ruta: str) -> str:
+        """Devuelve la ruta relativa desde la carpeta 'CORPUS CODEFEST AD
+        ASTRA 2026' en adelante, con separadores normalizados a '/'. Esto
+        hace que el doc_id y la fuente sean reproducibles entre máquinas
+        (Windows/Linux) sin depender de dónde esté el proyecto.
+
+        Si la ruta no contiene esa carpeta, se usa el path absoluto
+        normalizado a '/' como respaldo."""
+        CARPETA_RAIZ = "CORPUS CODEFEST AD ASTRA 2026"
+        # Normalizar separadores a '/' (Windows usa '\', Linux usa '/').
+        ruta_norm = ruta.replace("\\", "/")
+
+        idx = ruta_norm.find(CARPETA_RAIZ)
+        if idx != -1:
+            return ruta_norm[idx:]
+        # Respaldo: path absoluto normalizado.
+        return ruta_norm
+
+    @staticmethod
     def _asignar_doc_id(fuente: str) -> str:
         """doc_id único y estable derivado de la fuente (misma fuente,
         mismo doc_id en cada corrida)."""
@@ -137,10 +156,6 @@ class PDFPreprocessor:
         texto = re.sub(r"[ \t]{2,}", " ", texto)
         lineas = [ln.strip() for ln in texto.splitlines() if ln.strip()]
         return "\n".join(lineas)
-        """# NUEVO: normalizar TODOS los espacios en blanco (incluye saltos de
-        # línea y tabs) a un solo espacio, en todo el cuerpo del texto.
-        texto = re.sub(r"\s+", " ", texto)
-        return texto.strip()"""
 
     def _eliminar_boilerplate(self, texto: str) -> str:
         """Descarta líneas que coincidan con frases de plantilla."""
@@ -457,16 +472,22 @@ class PDFPreprocessor:
     def procesar(self, ruta_pdf: str, fenomeno: int,
                  fuente: str | None = None, formato: str = "pdf") -> list[dict]:
         """Procesa un PDF completo y devuelve la lista de chunks (dicts)
-        con todos los campos del contrato de salida (Tabla 1)."""
-        
-        
-        if fuente is None:
-            fuente = ruta_pdf  # por defecto, la fuente es la ruta del archivo
+        con todos los campos del contrato de salida (Tabla 1).
+
+        La 'fuente' se calcula SIEMPRE como la ruta relativa desde la
+        carpeta 'CORPUS CODEFEST AD ASTRA 2026' (normalizada a '/'), para
+        que sea reproducible entre máquinas. El parámetro 'fuente' manual
+        se ignora."""
+        # La fuente y el doc_id se derivan de la ruta relativa del archivo.
+        fuente = self._ruta_relativa(ruta_pdf)
 
         meta = self._extraer_metadata(ruta_pdf)
         cuerpo = self._extraer_texto(ruta_pdf)
         cuerpo = self._limpiar_texto(cuerpo)
         cuerpo = self._eliminar_boilerplate(cuerpo)
+        # Normalizar TODOS los espacios en blanco a un solo espacio, DESPUÉS
+        # de eliminar boilerplate (que necesita las líneas separadas).
+        cuerpo = re.sub(r"\s+", " ", cuerpo).strip()
         idioma = self._detectar_idioma(cuerpo)
         doc_id = self._asignar_doc_id(fuente)
 
@@ -526,7 +547,6 @@ def process_pdf(pdf_path: str, fenomeno: int,
         Cadena en formato JSON Lines (un chunk por línea). Cada línea es
         un objeto JSON con los campos de la Tabla 1 del documento guía.
     """
-    
     preprocesador = PDFPreprocessor(encoder_name=encoder_name)
     return preprocesador.procesar_a_jsonl(pdf_path, fenomeno, fuente)
 
@@ -534,9 +554,7 @@ def process_pdf(pdf_path: str, fenomeno: int,
 if __name__ == "__main__":
     # Pequeña demostración de uso (requiere un PDF real en la ruta dada).
     import sys
-    
     if len(sys.argv) > 3:
-        print(f"paso 0.1")
         ruta = sys.argv[1]
         fen = int(sys.argv[2])
         fuente = sys.argv[3] 
