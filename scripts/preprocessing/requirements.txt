@@ -22,3 +22,8 @@ pysbd            # Segmentación de oraciones multilingüe
 pandas
 # --- Utilidades ---
 json
+
+mapbox-vector-tile 
+langdetect 
+transformers 
+pysbd
