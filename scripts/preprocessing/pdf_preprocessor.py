@@ -380,6 +380,55 @@ class PDFPreprocessor:
     
 
     # ------------------------------------------------------------------
+    # Posprocesamiento de chunks (recorte de bordes cortados)
+    # ------------------------------------------------------------------
+    def _posprocesar_chunk(self, texto: str) -> str:
+        """Recorta los bordes de un chunk SOLO si están cortados:
+
+        Regla 1 (inicio): si el texto empieza en minúscula (viene de media
+            oración), elimina todo hasta la primera secuencia '. Mayúscula'
+            y conserva desde esa mayúscula. Si no hay '. Mayúscula', usa la
+            primera ',' o ';' como punto de corte (sin exigir mayúscula).
+
+        Regla 2 (final): si el texto NO termina en '.', '!' o '?' (oración
+            incompleta), elimina la última oración que empieza tras un
+            '. Mayúscula'. Si no hay '. Mayúscula', usa la última ',' o ';'
+            como punto de corte.
+
+        Si el borde ya está sano, no se toca. Devuelve el texto recortado."""
+        texto = texto.strip()
+        if not texto:
+            return texto
+
+        # --- Regla 1: recortar inicio solo si empieza cortado (minúscula) ---
+        if texto[0].islower():
+            # Buscar la primera secuencia '. Mayúscula'.
+            m = re.search(r"\.\s+(?=[A-ZÁÉÍÓÚÑ])", texto)
+            if m:
+                texto = texto[m.end():].lstrip()
+            else:
+                # Respaldo: primera ',' o ';'.
+                m2 = re.search(r"[;,]\s+", texto)
+                if m2:
+                    texto = texto[m2.end():].lstrip()
+
+        # --- Regla 2: recortar final solo si termina cortado ---
+        if texto and texto[-1] not in ".!?":
+            # Buscar el último '. Mayúscula' y cortar ahí (conservando el '.').
+            matches = list(re.finditer(r"\.\s+(?=[A-ZÁÉÍÓÚÑ])", texto))
+            if matches:
+                ultimo = matches[-1]
+                texto = texto[:ultimo.start() + 1].rstrip()
+            else:
+                # Respaldo: última ',' o ';'.
+                matches2 = list(re.finditer(r"[;,]", texto))
+                if matches2:
+                    ultimo2 = matches2[-1]
+                    texto = texto[:ultimo2.start() + 1].rstrip()
+
+        return texto.strip()
+
+    # ------------------------------------------------------------------
     # API pública de la clase
     # ------------------------------------------------------------------
     def procesar(self, ruta_pdf: str, fenomeno: int,
@@ -400,6 +449,7 @@ class PDFPreprocessor:
 
         registros = []
         for posicion, texto_chunk in enumerate(chunks_texto):
+            texto_chunk = self._posprocesar_chunk(texto_chunk)
             registros.append({
                 "doc_id": doc_id,
                 "chunk_id": f"{doc_id}-chunk-{posicion:03d}",
