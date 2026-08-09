@@ -102,7 +102,16 @@ class PDFPreprocessor:
         self.debug_huge_token = debug_huge_token
 
         # El tokenizer se carga una sola vez al crear el objeto.
-        self._tokenizer = AutoTokenizer.from_pretrained(encoder_name)
+        # Primero se intenta desde la caché local (local_files_only=True),
+        # lo que evita contactar a HuggingFace y su advertencia de red.
+        # Solo si el modelo NO está en caché, se descarga online.
+        try:
+            self._tokenizer = AutoTokenizer.from_pretrained(
+                encoder_name, local_files_only=True
+            )
+        except Exception:
+            # No está en caché: descargar una vez desde HuggingFace.
+            self._tokenizer = AutoTokenizer.from_pretrained(encoder_name)
 
     # ------------------------------------------------------------------
     # Utilidades internas
@@ -323,8 +332,8 @@ class PDFPreprocessor:
     
 
     def _chunk_texto(self, texto: str, idioma: str,
-                     max_palabras_ventana: int = 250,
-                     solape_palabras: int = 80) -> list[str]:
+                     max_palabras_ventana: int = 280,
+                     solape_palabras: int = 100) -> list[str]:
         """Divide el texto con ventana deslizante y solape:
           1. Cada ventana tiene como máximo 'max_palabras_ventana' palabras
              (250) — puede ser MENOR para no cortar oraciones.
@@ -454,7 +463,8 @@ class PDFPreprocessor:
         # --- Regla 1b: lógica del solape con el chunk anterior ---
         if texto_anterior:
             # Frase candidata: desde el inicio hasta el primer punto (incluido).
-            m_punto = re.search(r"\.", texto)
+            #m_punto = re.search(r"\.", texto)
+            m_punto = re.search(r"(?<!\d)\.\s+(?=[A-ZÁÉÍÓÚÑ])", texto)
             if m_punto:
                 candidata = texto[:m_punto.end()].strip()
                 # Buscar la frase candidata dentro del chunk anterior.
