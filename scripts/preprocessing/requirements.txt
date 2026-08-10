@@ -20,6 +20,7 @@ langdetect       # Detección automática de idioma (es / en / pt)
 transformers     # Tokenizer del encoder (conteo de tokens)
 pysbd            # Segmentación de oraciones multilingüe
 pandas
+openpyxl
 # --- Utilidades ---
 json
 
