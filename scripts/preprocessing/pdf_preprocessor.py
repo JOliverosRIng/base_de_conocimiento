@@ -156,6 +156,10 @@ class PDFPreprocessor:
         texto = unicodedata.normalize("NFC", texto)
         texto = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", texto)
 
+        # Remover solo comillas DOBLES (rectas " y curvas “ ”). Todas las
+        # comillas simples y apóstrofos (rectos ' y curvos ‘ ’) se conservan.
+        texto = re.sub(r"[\"\u201c\u201d]", "", texto)
+
         # Quitar marcadores de página tipo '!96 !', '! 100 !', '!101'
         texto = re.sub(r"!\s*\d+\s*!?", " ", texto)
         # NUEVO: quitar encabezados repetidos '! AI INDEX, NOVEMBER 2017'
@@ -332,8 +336,8 @@ class PDFPreprocessor:
     
 
     def _chunk_texto(self, texto: str, idioma: str,
-                     max_palabras_ventana: int = 280,
-                     solape_palabras: int = 100) -> list[str]:
+                     max_palabras_ventana: int = 250,
+                     solape_palabras: int = 80) -> list[str]:
         """Divide el texto con ventana deslizante y solape:
           1. Cada ventana tiene como máximo 'max_palabras_ventana' palabras
              (250) — puede ser MENOR para no cortar oraciones.
@@ -463,8 +467,7 @@ class PDFPreprocessor:
         # --- Regla 1b: lógica del solape con el chunk anterior ---
         if texto_anterior:
             # Frase candidata: desde el inicio hasta el primer punto (incluido).
-            #m_punto = re.search(r"\.", texto)
-            m_punto = re.search(r"(?<!\d)\.\s+(?=[A-ZÁÉÍÓÚÑ])", texto)
+            m_punto = re.search(r"\.", texto)
             if m_punto:
                 candidata = texto[:m_punto.end()].strip()
                 # Buscar la frase candidata dentro del chunk anterior.
