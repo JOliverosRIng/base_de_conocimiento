@@ -1,18 +1,14 @@
-import sys
-import os
-!{sys.executable} -m pip install --user -q pandas
-
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
-from dataclasses import asdict
+import hashlib
+from dataclasses import asdict, dataclass
+from datetime import datetime
 from pathlib import Path
 import re
 
 import pandas as pd
-import tiktoken
-
+from transformers import AutoTokenizer
 from language_detection import detect_language
 
 
@@ -51,318 +47,367 @@ class ChunkConfig:
 
     max_tokens: int = 256
     overlap_tokens: int = 75
-    tokenizer_name: str = "cl100k_base"
-
-def get_encoder(tokenizer_name: str):
-    """Devuelve el encoder de tiktoken para el tokenizer indicado."""
-
-    try:
-        return tiktoken.get_encoding(tokenizer_name)
-    except KeyError:
-        return tiktoken.get_encoding("cl100k_base")
+    tokenizer_name: str = "intfloat/multilingual-e5-base"
 
 
-def count_tokens(text: str, encoder) -> int:
-    """Cuenta la cantidad de tokens que contiene un texto."""
+class CSVProcessor:
+    def __init__(self, config: ChunkConfig | None = None):
+        self.config = config or ChunkConfig()
+        self.encoder = self.get_encoder(self.config.tokenizer_name)
 
-    return len(encoder.encode(text))
+    @staticmethod
+    def get_encoder(tokenizer_name: str):
+        """Devuelve el tokenizer de Hugging Face para el modelo indicado."""
 
-def split_text_manually(text: str) -> list[str]:
-    """Divide el texto en partes mas pequenas usando puntuacion y saltos de linea."""
+        return AutoTokenizer.from_pretrained(tokenizer_name)
 
-    text = str(text).strip()
-    if not text:
-        return []
+    @staticmethod
+    def count_tokens(text: str, encoder) -> int:
+        """Cuenta la cantidad de tokens que contiene un texto."""
 
-    parts = re.split(
-    r"\s*\|\s*|(?<=[.!?])\s+|\n+",
-    text
-    )
-    cleaned_parts = [part.strip() for part in parts if part.strip()]
-    return cleaned_parts or [text]
+        return len(encoder.encode(text, add_special_tokens=False))
 
-def split_oversized_body(body: str, encoder, max_tokens: int) -> list[str]:
-    """Divide el cuerpo de un valor (sin prefijo) en fragmentos que quepan en max_tokens.
+    @staticmethod
+    def split_text_manually(text: str) -> list[str]:
+        """Divide el texto en partes mas pequenas usando puntuacion y saltos de linea."""
 
-    Intenta primero cortar por '|' (listas), y si un item individual sigue
-    siendo demasiado largo, cae a corte por espacios.
-    """
+        text = str(text).strip()
+        if not text:
+            return []
 
-    if count_tokens(body, encoder) <= max_tokens:
-        return [body]
+        parts = re.split(r"\s*\|\s*|(?<=[.!?])\s+|\n+", text)
+        cleaned_parts = [part.strip() for part in parts if part.strip()]
+        return cleaned_parts or [text]
 
-    # Preferir cortar por "|" si el valor es una lista de items
-    if "|" in body:
-        items = body.split("|")
-    else:
-        items = body.split()  # fallback: palabras sueltas
+    def split_oversized_body(self, body: str, max_tokens: int) -> list[str]:
+        """Divide el cuerpo de un valor (sin prefijo) en fragmentos que quepan en max_tokens."""
 
-    separator = "|" if "|" in body else " "
-    fragments: list[str] = []
-    current_items: list[str] = []
+        if self.count_tokens(body, self.encoder) <= max_tokens:
+            return [body]
 
-    for item in items:
-        candidate = current_items + [item]
-        candidate_text = separator.join(candidate)
+        if "|" in body:
+            items = body.split("|")
+        else:
+            items = body.split()
 
-        if current_items and count_tokens(candidate_text, encoder) > max_tokens:
+        separator = "|" if "|" in body else " "
+        fragments: list[str] = []
+        current_items: list[str] = []
+
+        for item in items:
+            candidate = current_items + [item]
+            candidate_text = separator.join(candidate)
+
+            if current_items and self.count_tokens(candidate_text, self.encoder) > max_tokens:
+                fragments.append(separator.join(current_items))
+                current_items = [item]
+            else:
+                current_items = candidate
+
+        if current_items:
             fragments.append(separator.join(current_items))
-            current_items = [item]
-        else:
-            current_items = candidate
 
-    if current_items:
-        fragments.append(separator.join(current_items))
-
-    # Si un item individual (separado por "|") sigue siendo enorme, partirlo por espacios
-    final_fragments: list[str] = []
-    for fragment in fragments:
-        if count_tokens(fragment, encoder) > max_tokens and " " in fragment:
-            words = fragment.split()
-            current_words: list[str] = []
-            for word in words:
-                candidate_words = current_words + [word]
-                if current_words and count_tokens(" ".join(candidate_words), encoder) > max_tokens:
+        final_fragments: list[str] = []
+        for fragment in fragments:
+            if self.count_tokens(fragment, self.encoder) > max_tokens and " " in fragment:
+                words = fragment.split()
+                current_words: list[str] = []
+                for word in words:
+                    candidate_words = current_words + [word]
+                    if current_words and self.count_tokens(" ".join(candidate_words), self.encoder) > max_tokens:
+                        final_fragments.append(" ".join(current_words))
+                        current_words = [word]
+                    else:
+                        current_words = candidate_words
+                if current_words:
                     final_fragments.append(" ".join(current_words))
-                    current_words = [word]
-                else:
-                    current_words = candidate_words
-            if current_words:
-                final_fragments.append(" ".join(current_words))
-        else:
-            final_fragments.append(fragment)
+            elif self.count_tokens(fragment, self.encoder) > max_tokens:
+                final_fragments.extend(self._split_by_characters(fragment, max_tokens))
+            else:
+                final_fragments.append(fragment)
 
-    return final_fragments or [body]
+        return final_fragments or [body]
 
+    def _split_by_characters(self, text: str, max_tokens: int) -> list[str]:
+        """Último recurso: parte por longitud de texto cuando no hay espacios útiles."""
 
-def split_oversized_unit(label: str, body: str, encoder, max_tokens: int) -> list[str]:
-    """Divide una unidad 'columna: valor' demasiado larga, conservando el label en cada fragmento."""
+        if self.count_tokens(text, self.encoder) <= max_tokens:
+            return [text]
 
-    body_fragments = split_oversized_body(body, encoder, max_tokens)
+        pieces: list[str] = []
+        current_piece = ""
 
-    print(
-        "ANTES", count_tokens(body, encoder),
-        "DESPUES", [count_tokens(x, encoder) for x in body_fragments]
-    )
+        for character in text:
+            candidate = current_piece + character
+            if current_piece and self.count_tokens(candidate, self.encoder) > max_tokens:
+                pieces.append(current_piece)
+                current_piece = character
+            else:
+                current_piece = candidate
 
-    units: list[str] = []
-    for index, fragment in enumerate(body_fragments):
-        tag = f"{label}: " if index == 0 else f"{label} (cont. {index + 1}): "
-        units.append(f"{tag}{fragment}".strip())
+        if current_piece:
+            pieces.append(current_piece)
 
-    return units
+        return pieces or [text]
 
-def split_list_value(value: str) -> list[str]:
-    if "|" not in value:
-        return [value.strip()]
+    def split_oversized_unit(self, label: str, body: str, max_tokens: int) -> list[str]:
+        # estimación conservadora del tag más largo posible
+        tag_estimate = f"{label} (cont. 99): "
+        tag_tokens = self.count_tokens(tag_estimate, self.encoder)
+        body_budget = max(max_tokens - tag_tokens, 1)
 
-    return [item.strip() for item in value.split("|") if item.strip()]
+        body_fragments = self.split_oversized_body(body, body_budget)
 
-def row_to_units(row: pd.Series, columns: list[str], encoder, max_tokens: int) -> list[str]:
-    units: list[str] = []
+        units: list[str] = []
+        for index, fragment in enumerate(body_fragments):
+            tag = f"{label}: " if index == 0 else f"{label} (cont. {index + 1}): "
+            unit = f"{tag}{fragment}".strip()
+            if self.count_tokens(unit, self.encoder) > max_tokens:  # red de seguridad
+                budget = max(max_tokens - self.count_tokens(tag, self.encoder), 1)
+                fragment = self._split_by_characters(fragment, budget)[0]
+                unit = f"{tag}{fragment}".strip()
+            units.append(unit)
+        return units
 
-    for column, value in zip(columns, row):
-        value_str = str(value).strip()
+    @staticmethod
+    def split_list_value(value: str) -> list[str]:
+        if "|" not in value:
+            return [value.strip()]
 
-        if not value_str or value_str.lower() == "nan":
-            continue
+        return [item.strip() for item in value.split("|") if item.strip()]
 
-        # Primero intentamos conservar la unidad completa si ya cabe.
-        full_unit = f"{column}: {value_str}".strip()
-        if count_tokens(full_unit, encoder) <= max_tokens:
-            units.append(full_unit)
-            continue
+    def row_to_units(self, row: pd.Series, columns: list[str], max_tokens: int) -> list[str]:
+        units: list[str] = []
 
-        # Si es una lista separada por '|', se procesa ítem por ítem.
-        items = split_list_value(value_str)
-        if len(items) > 1:
-            for item_index, item in enumerate(items):
-                label = column if item_index == 0 else f"{column} (cont.)"
-                unit = f"{label}: {item}".strip()
+        for column, value in zip(columns, row):
+            value_str = str(value).strip()
 
-                if count_tokens(unit, encoder) <= max_tokens:
+            if not value_str or value_str.lower() == "nan":
+                continue
+
+            full_unit = f"{column}: {value_str}".strip()
+            if self.count_tokens(full_unit, self.encoder) <= max_tokens:
+                units.append(full_unit)
+                continue
+
+            items = self.split_list_value(value_str)
+            if len(items) > 1:
+                for item_index, item in enumerate(items):
+                    label = column if item_index == 0 else f"{column} (cont.)"
+                    unit = f"{label}: {item}".strip()
+
+                    if self.count_tokens(unit, self.encoder) <= max_tokens:
+                        units.append(unit)
+                    else:
+                        units.extend(self.split_oversized_unit(label, item, max_tokens))
+                continue
+
+            text_fragments = self.split_text_manually(value_str) or [value_str]
+
+            for index, fragment in enumerate(text_fragments):
+                label = column if index == 0 else f"{column} (cont.)"
+                unit = f"{label}: {fragment}".strip()
+
+                if self.count_tokens(unit, self.encoder) <= max_tokens:
                     units.append(unit)
                 else:
-                    units.extend(split_oversized_unit(label, item, encoder, max_tokens))
-            continue
+                    units.extend(self.split_oversized_unit(label, fragment, max_tokens))
 
-        # Si sigue siendo largo, lo cortamos por oraciones y luego por espacios.
-        text_fragments = split_text_manually(value_str) or [value_str]
+        return units
 
-        for index, fragment in enumerate(text_fragments):
-            label = column if index == 0 else f"{column} (cont.)"
-            unit = f"{label}: {fragment}".strip()
+    def tokens_of_units(self, units: list[tuple[int, str]]) -> int:
+        return self.count_tokens(" | ".join(text for _, text in units), self.encoder)
+    
+    def chunk_units(
+        self,
+        units: list[tuple[int, str]],
+        config: ChunkConfig | None = None,
+    ) -> list[tuple[list[int], str]]:
+        """Agrupa unidades en chunks respetando el máximo de tokens y el solapamiento."""
 
-            if count_tokens(unit, encoder) <= max_tokens:
-                units.append(unit)
+        config = config or self.config
+        chunks: list[tuple[list[int], str]] = []
+        current_units: list[tuple[int, str]] = []
+        safe_limit = config.max_tokens - 20
+
+        for row_id, unit in units:
+            candidate_units = current_units + [(row_id, unit)]
+
+            if current_units and self.tokens_of_units(candidate_units) > safe_limit:
+                chunks.append((
+                    sorted({r for r, _ in current_units}),
+                    " | ".join(text for _, text in current_units),
+                ))
+
+                overlap_units: list[tuple[int, str]] = []
+                overlap_tokens = 0
+
+                for row_index, text in reversed(current_units):
+                    text_tokens = self.count_tokens(text, self.encoder)
+
+                    if overlap_units and overlap_tokens + text_tokens > config.overlap_tokens:
+                        break
+
+                    overlap_units.insert(0, (row_index, text))
+                    overlap_tokens += text_tokens
+
+                    if overlap_tokens > config.overlap_tokens:
+                        break
+
+                candidate_units = overlap_units + [(row_id, unit)]
+
+                if self.tokens_of_units(candidate_units) <= safe_limit:
+                    current_units = candidate_units
+                else:
+                    current_units = [(row_id, unit)]
             else:
-                units.extend(split_oversized_unit(label, fragment, encoder, max_tokens))
-                
-    return units
+                current_units = candidate_units
 
-            
-
-def tokens_of_units(units, encoder):
-    return count_tokens(
-        "\t".join(t for _, t in units),
-        encoder
-    )
-
-
-def tokens_of_units(units: list[tuple[int, str]], encoder) -> int:
-    return count_tokens(
-        "\t".join(t for _, t in units),
-        encoder
-    )
-
-
-def chunk_units(
-    units: list[tuple[int, str]],
-    encoder,
-    config: ChunkConfig
-) -> list[tuple[list[int], str]]:
-    """
-    Agrupa unidades en chunks respetando el máximo de tokens
-    y el solapamiento por tokens.
-    """
-
-    chunks: list[tuple[list[int], str]] = []
-    current_units: list[tuple[int, str]] = []
-
-    SAFE_LIMIT = config.max_tokens - 20
-
-    for row_id, unit in units:
-
-        # ¿Cabe la unidad en el chunk actual?
-        candidate_units = current_units + [(row_id, unit)]
-
-        if current_units and tokens_of_units(candidate_units, encoder) > SAFE_LIMIT:
-
-            # Guardar chunk actual
+        if current_units:
             chunks.append((
                 sorted({r for r, _ in current_units}),
-                "\t".join(t for _, t in current_units)
+                "\t".join(text for _, text in current_units),
             ))
 
-            # --------------------------
-            # Construir overlap
-            # --------------------------
-            overlap_units: list[tuple[int, str]] = []
-            overlap_tokens = 0
+        return chunks
 
-            for r, t in reversed(current_units):
-                t_tokens = count_tokens(t, encoder)
+    @staticmethod
+    def _normalize_metadata_value(value, default: str | None = "") -> str | None:
+        if value is None or (isinstance(value, float) and pd.isna(value)):
+            return default
+        text = str(value).strip()
+        return text if text else default
 
-                if overlap_units and overlap_tokens + t_tokens > config.overlap_tokens:
-                    break
+    @staticmethod
+    def _asignar_doc_id(fuente: str) -> str:
+        """Genera un doc_id estable a partir de la fuente."""
 
-                overlap_units.insert(0, (r, t))
-                overlap_tokens += t_tokens
+        hash_corto = hashlib.sha1(fuente.encode("utf-8")).hexdigest()[:8]
+        return f"DOC-{hash_corto}"
 
-                if overlap_tokens > config.overlap_tokens:
-                    break
+    @staticmethod
+    def _load_dataframe(input_path: str | Path) -> pd.DataFrame:
+        path = Path(input_path)
+        suffix = path.suffix.lower()
 
-            # Intentar agregar la unidad nueva sobre el overlap
-            candidate_units = overlap_units + [(row_id, unit)]
+        if suffix in {".xlsx", ".xls"}:
+            return pd.read_excel(path)
 
-            if tokens_of_units(candidate_units, encoder) <= SAFE_LIMIT:
-                current_units = candidate_units
-            else:
-                # Si ni con overlap cabe, descartar overlap
-                current_units = [(row_id, unit)]
+        return pd.read_csv(path)
 
-        else:
-            current_units = candidate_units
+    @staticmethod
+    def extraer_metadatos_archivo(csv_path: str | Path) -> dict[str, str | None]:
+        """Extrae metadatos base del archivo a partir de la ruta y la fecha de modificacion."""
 
-    if current_units:
-        chunks.append((
-            sorted({r for r, _ in current_units}),
-            "\t".join(t for _, t in current_units)
-        ))
+        path = Path(csv_path)
+        stat_info = path.stat()
+        fuente = path.name
+        titulo = path.stem.replace("_", " ").strip() or path.name
+        fecha = datetime.fromtimestamp(stat_info.st_mtime).date().isoformat()
+        formato = path.suffix.lstrip(".").lower() or "csv"
+        doc_id = CSVProcessor._asignar_doc_id(fuente)
+        return {
+            "doc_id": doc_id,
+            "fuente": fuente,
+            "formato": formato,
+            "titulo": titulo,
+            "fecha": fecha,
+        }
 
-    return chunks
+    def build_chunks(
+        self,
+        csv_path: str | Path,
+        fenomeno: int | str,
+        config: ChunkConfig | None = None,
+    ) -> list[ChunkData]:
+        """Construye los chunks a partir de un CSV o XLSX."""
 
-def _normalize_metadata_value(value, default: str = "") -> str:
-    if value is None or (isinstance(value, float) and pd.isna(value)):
-        return default
-    return str(value).strip()
+        config = config or self.config
+        csv_path = Path(csv_path)
+        dataframe = self._load_dataframe(csv_path)
+
+        metadata_archivo = self.extraer_metadatos_archivo(csv_path)
+        doc_id = metadata_archivo["doc_id"]
+        fuente = metadata_archivo["fuente"] or csv_path.name
+        formato = metadata_archivo["formato"] or csv_path.suffix.lstrip(".").lower() or "csv"
+        titulo_final = metadata_archivo["titulo"] or csv_path.name
+        fecha_final = metadata_archivo["fecha"]
+
+        document_units: list[tuple[int, str]] = []
+
+        for row_id, (_, row) in enumerate(dataframe.iterrows(), start=1):
+            units = self.row_to_units(row, dataframe.columns.tolist(), config.max_tokens)
+            document_units.extend((row_id, unit) for unit in units)
+
+        document_chunks = self.chunk_units(document_units, config)
+
+        records: list[ChunkData] = []
+        for posicion, (_, texto) in enumerate(document_chunks, start=1):
+            chunk_id = f"{doc_id}-chunk-{posicion:03d}"
+            texto_final = texto
+            records.append(
+                ChunkData(
+                    doc_id=doc_id,
+                    chunk_id=chunk_id,
+                    fuente=fuente,
+                    formato=formato,
+                    fenomeno=fenomeno,
+                    posicion=posicion,
+                    num_tokens=self.count_tokens(texto_final, self.encoder),
+                    texto=texto_final,
+                    idioma=detect_language(texto_final),
+                    fecha=self._normalize_metadata_value(fecha_final, default=None),
+                    titulo=titulo_final,
+                )
+            )
+
+        return records
+
+    @staticmethod
+    def save_chunks_to_json(records: list[ChunkData], output_path: str | Path) -> Path:
+        """Guarda la lista de chunks como un JSON con una lista de objetos."""
+
+        output_path = Path(output_path)
+        output_path.write_text(
+            json.dumps([asdict(record) for record in records], ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        return output_path
 
 
 def build_chunks(
     csv_path: str | Path,
-    *,
-    doc_id: str,
-    fuente: str,
     fenomeno: int | str,
-    fecha: str | None = None,
-    titulo: str | None = None,
-    formato: str = "csv",
     config: ChunkConfig | None = None,
 ) -> list[ChunkData]:
-    """Construye los chunks a partir de un CSV."""
+    """Compatibilidad hacia atras para el flujo de chunks del CSV."""
 
-    config = config or ChunkConfig()
-    csv_path = Path(csv_path)
-    dataframe = pd.read_csv(csv_path)
-    encoder = get_encoder(config.tokenizer_name)
-
-    titulo_final = titulo or csv_path.name
-
-    document_units: list[tuple[int, str]] = []
-
-    for row_id, (_, row) in enumerate(dataframe.iterrows(), start=1):
-        units = row_to_units(row, dataframe.columns.tolist(), encoder, config.max_tokens)
-        document_units.extend((row_id, unit) for unit in units)
-
-    document_chunks = chunk_units(document_units, encoder, config)
-
-    records: list[ChunkData] = []
-    for posicion, (_, texto) in enumerate(document_chunks, start=1):
-        chunk_id = f"{doc_id}-chunk-{posicion:03d}"
-        texto_final = texto.replace("\t", " | ")
-        records.append(
-            ChunkData(
-                doc_id=doc_id,
-                chunk_id=chunk_id,
-                fuente=fuente,
-                formato=formato,
-                fenomeno=fenomeno,
-                posicion=posicion,
-                num_tokens=count_tokens(texto_final, encoder),
-                texto=texto_final,
-                idioma=detect_language(texto_final),
-                fecha=_normalize_metadata_value(fecha, default=None),
-                titulo=titulo_final,
-            )
-        )
-
-    return records
+    return CSVProcessor(config).build_chunks(csv_path, fenomeno, config=config)
 
 
 def save_chunks_to_json(records: list[ChunkData], output_path: str | Path) -> Path:
-    """Guarda la lista de chunks como un JSON con una lista de objetos."""
+    """Compatibilidad hacia atras para guardar chunks en JSON."""
 
-    output_path = Path(output_path)
-    output_path.write_text(json.dumps([asdict(record) for record in records], ensure_ascii=False, indent=2), encoding="utf-8")
-    return output_path
+    return CSVProcessor().save_chunks_to_json(records, output_path)
+
+
+def process_csv_file(
+    csv_path: str | Path,
+    fenomeno: int | str,
+    output_path: str | Path = "chunks_csv.json",
+) -> Path:
+    """Procesa un CSV o XLSX y guarda los chunks generados en JSON."""
+
+    processor = CSVProcessor()
+    records = processor.build_chunks(csv_path, fenomeno=fenomeno)
+    return processor.save_chunks_to_json(records, output_path)
 
 
 def main() -> None:
-    csv_path = Path("C:\\git local\\codefest\\base_de_conocimiento\\src\\CORPUS CODEFEST AD ASTRA 2026\\F1_IA_y_Capacidades_Estrategicas\\AI_Index_Stanford\\recursos\\Healthcare_Medicine\\datasets\\AIINDEX_clinicaltrials-robotics-csv copy.csv")
-    records = build_chunks(
-        csv_path,
-        doc_id="DOC-120",
-        fuente=csv_path.name,
-        fenomeno=3,
-        fecha="2024-12-31",
-        titulo=csv_path.name,
-    )
-    output_path = save_chunks_to_json(records, Path("chunks.json"))
+    csv_path = Path("AIINDEX_clinicaltrials-robotics-csv.csv")
+    output_path = process_csv_file(csv_path, fenomeno=3)
 
-    #for record in records:
-    #    print(record)
-
-    print(f"Saved {len(records)} chunks to {output_path}")
+    print(f"Saved chunks to {output_path}")
 
 
 if __name__ == "__main__":
