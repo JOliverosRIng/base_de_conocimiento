@@ -364,17 +364,106 @@ class CSVProcessor:
         return records
 
     @staticmethod
-    def save_chunks_to_json(records: list[ChunkData], output_path: str | Path) -> Path:
+    def _serialize_records(records: list[ChunkData] | list[dict[str, object]]) -> list[dict[str, object]]:
+        """Convierte registros de chunk a una lista serializable en JSON."""
+
+        serializable_records: list[dict[str, object]] = []
+        for record in records:
+            if isinstance(record, ChunkData):
+                serializable_records.append(asdict(record))
+            elif isinstance(record, dict):
+                serializable_records.append(record)
+            else:
+                serializable_records.append(dict(record))
+        return serializable_records
+
+    @staticmethod
+    def save_chunks_to_json(
+        records: list[ChunkData] | list[dict[str, object]],
+        output_path: str | Path,
+    ) -> Path:
         """Guarda la lista de chunks como un JSON con una lista de objetos."""
 
         output_path = Path(output_path)
+        payload = CSVProcessor._serialize_records(records)
         output_path.write_text(
-            json.dumps([asdict(record) for record in records], ensure_ascii=False, indent=2),
+            json.dumps(payload, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
         return output_path
 
+    def verify_coverage(
+        self,
+        csv_path: str | Path,
+        records: list[ChunkData],
+        config: ChunkConfig | None = None,
+    ) -> dict:
+        """Verifica que toda la información del archivo original esté presente
+        en los chunks finales generados (records).
 
+        Reconstruye las unidades esperadas (fila -> fragmentos "columna: valor")
+        y chequea que cada una aparezca en el texto de al menos un chunk.
+        """
+        config = config or self.config
+        dataframe = self._load_dataframe(Path(csv_path))
+
+        # 1. Reconstruir las unidades esperadas, igual que en build_chunks
+        unidades_esperadas: list[tuple[int, str]] = []
+        for row_id, (_, row) in enumerate(dataframe.iterrows(), start=1):
+            units = self.row_to_units(row, dataframe.columns.tolist(), config.max_tokens)
+            unidades_esperadas.extend((row_id, unit) for unit in units)
+
+        # 2. Texto combinado de todos los chunks realmente guardados
+        texto_combinado = " ".join(record.texto for record in records)
+
+        # 3. Buscar unidades que no aparezcan en ningún chunk
+        unidades_faltantes: list[tuple[int, str]] = []
+        filas_con_datos_faltantes: set[int] = set()
+
+        for row_id, unit in unidades_esperadas:
+            if unit not in texto_combinado:
+                unidades_faltantes.append((row_id, unit))
+                filas_con_datos_faltantes.add(row_id)
+
+        total_filas = len(dataframe)
+        total_unidades = len(unidades_esperadas)
+        filas_ok = total_filas - len(filas_con_datos_faltantes)
+
+        reporte = {
+            "total_filas_dataframe": total_filas,
+            "total_unidades_esperadas": total_unidades,
+            "total_chunks_generados": len(records),
+            "filas_completas": filas_ok,
+            "filas_con_datos_faltantes": sorted(filas_con_datos_faltantes),
+            "unidades_faltantes": unidades_faltantes,
+            "cobertura_filas_pct": round(filas_ok / total_filas * 100, 2) if total_filas else 0,
+            "cobertura_unidades_pct": round(
+                (total_unidades - len(unidades_faltantes)) / total_unidades * 100, 2
+            ) if total_unidades else 0,
+            "ok": not unidades_faltantes,
+        }
+        return reporte
+
+    @staticmethod
+    def print_coverage_report(reporte: dict) -> None:
+        """Imprime el reporte de cobertura de forma legible."""
+        print("=== Reporte de cobertura ===")
+        print(f"Filas en el archivo:        {reporte['total_filas_dataframe']}")
+        print(f"Unidades esperadas:         {reporte['total_unidades_esperadas']}")
+        print(f"Chunks generados:           {reporte['total_chunks_generados']}")
+        print(f"Filas completas:            {reporte['filas_completas']}")
+        print(f"Cobertura por filas:        {reporte['cobertura_filas_pct']}%")
+        print(f"Cobertura por unidades:     {reporte['cobertura_unidades_pct']}%")
+
+        if reporte["ok"]:
+            print("✅ Toda la información fue capturada correctamente.")
+        else:
+            print(f"⚠️  Faltan {len(reporte['unidades_faltantes'])} unidades "
+                f"en {len(reporte['filas_con_datos_faltantes'])} filas.")
+            for row_id, unit in reporte["unidades_faltantes"][:20]:
+                print(f"  - Fila {row_id}: {unit[:120]}")
+            if len(reporte["unidades_faltantes"]) > 20:
+                print(f"  ... y {len(reporte['unidades_faltantes']) - 20} más.")
 def build_chunks(
     csv_path: str | Path,
     fenomeno: int | str,
@@ -394,21 +483,17 @@ def save_chunks_to_json(records: list[ChunkData], output_path: str | Path) -> Pa
 def process_csv_file(
     csv_path: str | Path,
     fenomeno: int | str,
-    output_path: str | Path = "chunks_csv.json",
-) -> Path:
-    """Procesa un CSV o XLSX y guarda los chunks generados en JSON."""
+) -> list[dict[str, object]]:
+    """Procesa un CSV o XLSX y devuelve la lista de chunks como objetos JSON."""
 
     processor = CSVProcessor()
     records = processor.build_chunks(csv_path, fenomeno=fenomeno)
-    return processor.save_chunks_to_json(records, output_path)
+    return [asdict(record) for record in records]
 
 
 def main() -> None:
-    csv_path = Path("AIINDEX_clinicaltrials-robotics-csv.csv")
-    output_path = process_csv_file(csv_path, fenomeno=3)
-
-    print(f"Saved chunks to {output_path}")
-
+    r = process_csv_file("AIINDEX_clinicaltrials-robotics-csv.csv", fenomeno=1)
+    save_chunks_to_json(r, "AIINDEX_clinicaltrials-robotics-chunks.json")
 
 if __name__ == "__main__":
     main()
