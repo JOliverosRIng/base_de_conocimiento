@@ -1,72 +1,102 @@
 import json
 from pathlib import Path
-from typing import Any
 import pysbd
 from transformers import AutoTokenizer
+from langdetect import detect
+import hashlib
 
 
 class Chunker:
 
-    def __init__(self, max_words=250, language="es"):
+    def __init__(self, max_words=250):
         self.max_words = max_words
-        self.segmentador = pysbd.Segmenter(
-            language=language,
-            clean=False
-        )
-        self.tokenizer = AutoTokenizer.from_pretrained("BAAI/bge-m3")
 
-    def split(self, document: dict, doc_id: str):
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            "intfloat/multilingual-e5-base"
+        )
+
+    def split(self, document: dict, fenomeno: int):
+
         texto = document["content"]
         metadata = document["metadata"]
-        oraciones = self.segmentador.segment(texto)  # aqui se parte en oraciones
+
+        idioma = metadata.get("language", "en")
+
+        try:
+            segmentador = pysbd.Segmenter(
+                language=idioma,
+                clean=False
+            )
+        except Exception:
+            segmentador = pysbd.Segmenter(
+                language="en",
+                clean=False
+            )
+
+        oraciones = segmentador.segment(texto)
+
         chunks = []
         chunk_actual = []
         palabras_actuales = 0
         posicion = 0
 
-        for oracion in oraciones: #Aqui se recorren las oraciones
-            oracion = oracion.strip() #esto es pa limpiar espacios 
+        doc_id = metadata["doc_id"]
 
-            if not oracion:  
+        for oracion in oraciones:
+
+            oracion = oracion.strip()
+
+            if not oracion:
                 continue
 
-            palabras_oracion = len(oracion.split()) #se cuentan las palabras
+            palabras_oracion = len(oracion.split())
 
-            if palabras_actuales + palabras_oracion <= self.max_words: #se verifica que quepa en el chunk osea que sea de 250 palabras o menos
+            if palabras_actuales + palabras_oracion <= self.max_words:
+
                 chunk_actual.append(oracion)
                 palabras_actuales += palabras_oracion
 
-            else: #aqui es donde se corta el chunk
-                texto_chunk = " ".join(chunk_actual)
-                num_words = len(texto_chunk.split())
-                num_tokens = len(
-                    self.tokenizer.encode(
-                        texto_chunk,
-                        add_special_tokens=False
+            else:
+
+                if chunk_actual:
+
+                    texto_chunk = " ".join(chunk_actual)
+
+                    num_words = len(texto_chunk.split())
+
+                    num_tokens = len(
+                        self.tokenizer.encode(
+                            texto_chunk,
+                            add_special_tokens=False
+                        )
                     )
-                )
-                #se agrega el chunk a la lista de chunks
-                chunks.append({
-                    "doc_id": doc_id,
-                    "chunk_id": f"{doc_id}-chunk-{posicion:03d}",
-                    "fuente": metadata["source"],
-                    "formato": metadata["format"],
-                    "fenomeno": metadata.get("phenomenon"),
-                    "posicion": posicion,
-                    "num_words": num_words,
-                    "num_tokens": num_tokens,
-                    "texto": texto_chunk,
-                    "idioma": metadata.get("language"),
-                    "fecha": metadata.get("date"),
-                    "titulo": metadata.get("title")
-                })
-                posicion += 1
+
+                    chunks.append({
+                        "doc_id": doc_id,
+                        "chunk_id": f"{doc_id}-chunk-{posicion:03d}",
+                        "fuente": metadata["source"],
+                        "formato": metadata["format"],
+                        "fenomeno": fenomeno,
+                        "posicion": posicion,
+                        "num_tokens": num_tokens,
+                        "num_words": num_words,
+                        "texto": texto_chunk,
+                        "idioma": metadata.get("language"),
+                        "fecha": metadata.get("date"),
+                        "titulo": metadata.get("title")
+                    })
+
+                    posicion += 1
+
                 chunk_actual = [oracion]
                 palabras_actuales = palabras_oracion
-        #Esta parte de aca es por que el chunk queda abierto entonces toca ponerlo para que el ultimo chunk se agregue
+
         if chunk_actual:
+
             texto_chunk = " ".join(chunk_actual)
+
             num_words = len(texto_chunk.split())
+
             num_tokens = len(
                 self.tokenizer.encode(
                     texto_chunk,
@@ -79,80 +109,149 @@ class Chunker:
                 "chunk_id": f"{doc_id}-chunk-{posicion:03d}",
                 "fuente": metadata["source"],
                 "formato": metadata["format"],
-                "fenomeno": metadata.get("phenomenon"),
+                "fenomeno": fenomeno,
                 "posicion": posicion,
-                "num_words": num_words,
                 "num_tokens": num_tokens,
+                "num_words": num_words,
                 "texto": texto_chunk,
                 "idioma": metadata.get("language"),
                 "fecha": metadata.get("date"),
                 "titulo": metadata.get("title")
-
             })
 
         return chunks
 
+
 class JSONExtractor:
 
-    #Este es el metodo que pasa la data a texto plano y separa en metadata y texto
+    def _ruta_relativa(self, ruta: str) -> str:  #Este se lo copie a Leo
+        CARPETA_RAIZ = "CORPUS CODEFEST AD ASTRA 2026"
+        ruta_norm = ruta.replace("\\", "/")
+        idx = ruta_norm.find(CARPETA_RAIZ)
+        if idx != -1:
+            return ruta_norm[idx:]
+        return ruta_norm
+
+    def _asignar_doc_id(self, fuente: str) -> str: #Este se lo copie a leo
+        hash_corto = hashlib.sha1(
+            fuente.encode("utf-8")
+        ).hexdigest()[:8]
+        return f"DOC-{hash_corto}"
+
+    def _detectar_idioma(self, texto: str) -> str: #Este tambien se lo copie a leo
+        limpio = texto.strip()
+        if len(limpio.split()) < 5:
+            return "desconocido"
+        try:
+            return detect(limpio)
+        except Exception:
+            return "desconocido"
+    
+    def _aplanar_json(self, valor) -> str:  #Se agregó esta función para que si el json es completamente diferente como es el caso del swf_counterspace_2026 o el de catalog
+                                            #Se aplane y se agregue toda esta info al texto del chunk
+        partes = []
+
+        if isinstance(valor, dict):
+
+            for clave, contenido in valor.items():
+
+                if contenido is None:
+                    continue
+
+                texto_contenido = self._aplanar_json(contenido)
+
+                if texto_contenido:
+                    partes.append(
+                        f"{clave}: {texto_contenido}"
+                    )
+
+        elif isinstance(valor, list):
+
+            for elemento in valor:
+
+                texto_elemento = self._aplanar_json(elemento)
+
+                if texto_elemento:
+                    partes.append(texto_elemento)
+
+        else:
+
+            partes.append(str(valor))
+
+        return "\n".join(partes)
+
+
+    
+
     def extract(self, file_path: str) -> dict:
         with open(file_path, "r", encoding="utf-8") as file:
             data = json.load(file)
-        # Construcción del texto plano, por ahora solo se toma body_text pero se puede hacer un
-        #condicional para evaluar los campos que se que contienen el texto .
-        body_text = data.get("body_text", "").strip()
+        if isinstance(data, dict):
 
-        # Como metadata deje la información que se requiere en el formato del chunk.
+            body_text = data.get("body_text")
+
+            if not body_text:
+                body_text = self._aplanar_json(data)
+
+            title = data.get("title")
+            date = data.get("date")
+
+        elif isinstance(data, list):
+
+            body_text = self._aplanar_json(data)
+
+            title = None
+            date = None
+
+        else:
+
+            body_text = str(data)
+
+            title = None
+            date = None
+
+        body_text = body_text.strip()
+        idioma = self._detectar_idioma(body_text)
+        ruta_relativa = self._ruta_relativa(file_path)
+        doc_id = self._asignar_doc_id(ruta_relativa)
         metadata = {
+            "doc_id": doc_id,
             "source": Path(file_path).name,
             "format": "json",
-            "title": data.get("title"),
-            "date": data.get("date"),
-            # El JSON no lo trae explicito, para esto definamos una biblioteca o como lo hicieron?
-            "language": data.get("language"),
-            #Esto quedamos en que lo determinaba el path
-            "phenomenon": data.get("phenomenon")
+            "title": title,
+            "date": date,
+            "language": idioma
         }
 
         return {
             "content": body_text,
             "metadata": metadata
-
         }
 
-if __name__ == "__main__":
 
-    extractor = JSONExtractor() #no es nada raro, solo se crean las variables de las clases
+def procesar_json(path: str, fenomeno: int) -> list[dict]:
+
+    extractor = JSONExtractor()
+
     chunker = Chunker(
-        max_words=250,
-        language="en"
+        max_words=250
     )
-    carpeta = Path("prueba")
-    todos_los_chunks = []
 
-    # Recorremos todos los JSON
-    for indice_documento, archivo_json in enumerate(
-            sorted(carpeta.glob("*.json")),
-            start=1):
+    documento = extractor.extract(path)
 
-        # DOC-001, DOC-002, DOC-003...
-        doc_id = f"DOC-{indice_documento:03d}"
-        print(f"Procesando {archivo_json.name} -> {doc_id}") #Esto lo agregó la ia pero esta bonito jsjsjs
-        documento = extractor.extract(archivo_json)
-        chunks = chunker.split(documento, doc_id) #se toman los chunks del documento
-        todos_los_chunks.extend(chunks) #Se agregan los chunks del documento a la lista de chunks que despues sera el json
+    chunks = chunker.split(
+        documento,
+        fenomeno
+    )
 
-    # Guardar todos los chunks
-    with open("chunks.json", "w", encoding="utf-8") as file:
+    return chunks
 
-        json.dump(
-            todos_los_chunks,
-            file,
-            indent=4,
-            ensure_ascii=False
-        )
+def procesar_jsonl(path: str, fenomeno: int) -> str: #Esta es la función a llamar desde afuera
+    chunks = procesar_json(path, fenomeno)
 
-    print("\n--------------------------------------")
-    print(f"Documentos procesados : {indice_documento}")
-    print(f"Chunks generados      : {len(todos_los_chunks)}")
-    print("Archivo generado      : chunks.json")
+    return "\n".join(
+        json.dumps(chunk, ensure_ascii=False)
+        for chunk in chunks
+    )
+
+

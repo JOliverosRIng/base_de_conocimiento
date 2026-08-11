@@ -28,3 +28,6 @@ mapbox-vector-tile
 langdetect 
 transformers 
 pysbd
+
+hashlib
+pathlib
