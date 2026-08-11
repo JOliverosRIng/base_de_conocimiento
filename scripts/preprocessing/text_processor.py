@@ -79,7 +79,7 @@ class TextProcessor:
         max_palabras: int = 250,
         max_tokens: int = 250,
         debug_huge_token: bool = False,
-        imprimir_validacion: bool = True,
+        imprimir_validacion: bool = False,
     ):
         self.max_palabras = max_palabras
         self.max_tokens = max_tokens
@@ -388,7 +388,7 @@ class TextProcessor:
     # Validación de integridad de los chunks
     # ------------------------------------------------------------------
     def _validar_chunks(self, cuerpo: str, chunks: list[dict],
-                        n_ancla: int = 8, imprimir: bool = True) -> dict:
+                        n_ancla: int = 8, imprimir: bool = False) -> dict:
         """Valida la integridad de los chunks contra el cuerpo original.
         SIEMPRE devuelve un dict con los problemas. Imprime solo si
         'imprimir' es True Y hay problemas.
@@ -541,7 +541,7 @@ class TextProcessor:
 def process_pdf(pdf_path: str, fenomeno: int,
                 encoder_name: str = "intfloat/multilingual-e5-base",
                 debug_huge_token: bool = False,
-                imprimir_validacion: bool = True) -> str:
+                imprimir_validacion: bool = False) -> str:
     """
     Procesa un PDF y devuelve el JSONL con los chunks del archivo.
     Orquesta la lectura (PDFReader) y el procesamiento (TextProcessor).
