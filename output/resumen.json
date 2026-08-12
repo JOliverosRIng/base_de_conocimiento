@@ -1,0 +1,18 @@
+{
+  "fecha": "2026-08-12T04:22:09",
+  "archivos_procesados_total": 4,
+  "archivos_nuevos_esta_corrida": 4,
+  "chunks_nuevos_esta_corrida": 2084,
+  "formatos": [
+    ".csv",
+    ".json",
+    ".pbf",
+    ".pdf"
+  ],
+  "paths_procesados": [
+    "d:\\GIT\\Codefest\\base_de_conocimiento\\src\\CORPUS CODEFEST AD ASTRA 2026\\F1_IA_y_Capacidades_Estrategicas\\AI_Index_Stanford\\pdfs\\AIINDEX_ai-index-report-2017.pdf",
+    "d:\\GIT\\Codefest\\base_de_conocimiento\\src\\CORPUS CODEFEST AD ASTRA 2026\\F1_IA_y_Capacidades_Estrategicas\\AI_Index_Stanford\\recursos\\Healthcare_Medicine\\datasets\\AIINDEX_clinicaltrials-artificial-intelligence-csv.csv",
+    "d:\\GIT\\Codefest\\base_de_conocimiento\\src\\CORPUS CODEFEST AD ASTRA 2026\\F1_IA_y_Capacidades_Estrategicas\\Atlantic_Council\\GeoTech_Cues\\page_01\\ATLCOUNCIL_01-europe-must-address-the-digital-sovereignty-triad.json",
+    "d:\\GIT\\Codefest\\base_de_conocimiento\\src\\CORPUS CODEFEST AD ASTRA 2026\\F3_Dinamicas_Territoriales\\Amazon_Underworld\\tiles\\3\\2\\AMAZONUW_3.pbf"
+  ]
+}

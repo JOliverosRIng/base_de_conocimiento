@@ -14,12 +14,12 @@ class Chunker:
         self.tokenizer = AutoTokenizer.from_pretrained(
             "intfloat/multilingual-e5-base"
         )
-
+    
     def split(self, document: dict, fenomeno: int):
 
         texto = document["content"]
         metadata = document["metadata"]
-
+        
         idioma = metadata.get("language", "en")
 
         try:
@@ -69,12 +69,12 @@ class Chunker:
                             texto_chunk,
                             add_special_tokens=False
                         )
-                    )
+                    )                    
 
                     chunks.append({
                         "doc_id": doc_id,
                         "chunk_id": f"{doc_id}-chunk-{posicion:03d}",
-                        "fuente": metadata["source"],
+                        "fuente": metadata["fuente"],
                         "formato": metadata["format"],
                         "fenomeno": fenomeno,
                         "posicion": posicion,
@@ -107,7 +107,7 @@ class Chunker:
             chunks.append({
                 "doc_id": doc_id,
                 "chunk_id": f"{doc_id}-chunk-{posicion:03d}",
-                "fuente": metadata["source"],
+                "fuente": metadata["fuente"],
                 "formato": metadata["format"],
                 "fenomeno": fenomeno,
                 "posicion": posicion,
@@ -252,7 +252,8 @@ class JSONExtractor:
             "format": "json",
             "title": title,
             "date": date,
-            "language": idioma
+            "language": idioma,
+            "fuente": ruta_relativa
         }
 
         return {
