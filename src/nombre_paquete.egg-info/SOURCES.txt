@@ -12,6 +12,7 @@ docs/data/data_summary.md
 docs/deployment/deploymentdoc.md
 docs/modeling/baseline_models.md
 docs/modeling/model_report.md
+output/resumen.json
 scripts/preprocessing/chunks_wb.json
 scripts/preprocessing/chunks_wob.json
 scripts/preprocessing/csv_preprocessor.py
@@ -32,7 +33,11 @@ src/nombre_paquete.egg-info/dependency_links.txt
 src/nombre_paquete.egg-info/requires.txt
 src/nombre_paquete.egg-info/top_level.txt
 src/nombre_paquete/__init__.py
+src/nombre_paquete.egg-info/PKG-INFO
 src/nombre_paquete.egg-info/SOURCES.txt
+src/nombre_paquete.egg-info/dependency_links.txt
+src/nombre_paquete.egg-info/requires.txt
+src/nombre_paquete.egg-info/top_level.txt
 src/nombre_paquete/database/__init__.py
 src/nombre_paquete/evaluation/__init__.py
 src/nombre_paquete/models/__init__.py
