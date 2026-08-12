@@ -34,11 +34,19 @@ import unicodedata
 
 from langdetect import detect, DetectorFactory
 from transformers import AutoTokenizer
+from transformers.utils import logging as hf_logging
 import pysbd
 
 
 # Detección de idioma determinista (mismo resultado en cada corrida)
 DetectorFactory.seed = 0
+
+# Silenciar por defecto las advertencias del tokenizer (p. ej. "Token
+# indices sequence length is longer than..."), que son inofensivas durante
+# el chunking porque los bloques grandes se parten después. La advertencia
+# se REACTIVA temporalmente solo dentro de _validar_chunks, que es el punto
+# donde un exceso de tokens sí es una señal real que conviene ver.
+hf_logging.set_verbosity_error()
 
 
 class TextProcessor:
@@ -437,15 +445,22 @@ class TextProcessor:
                 })
 
         # Validación 2: límites de tokens y palabras.
+        # Aquí SÍ queremos ver la advertencia del tokenizer: un chunk final
+        # que supere el límite del modelo es una señal real de problema. Se
+        # reactiva temporalmente y se vuelve a silenciar al terminar.
         excede_palabras = []
         excede_tokens = []
-        for idx, c in enumerate(chunks):
-            n_pal = len(c["texto"].split())
-            n_tok = self._contar_tokens(c["texto"])
-            if n_pal > self.max_palabras:
-                excede_palabras.append((idx, n_pal))
-            if n_tok > self.max_tokens:
-                excede_tokens.append((idx, n_tok))
+        hf_logging.set_verbosity_warning()
+        try:
+            for idx, c in enumerate(chunks):
+                n_pal = len(c["texto"].split())
+                n_tok = self._contar_tokens(c["texto"])
+                if n_pal > self.max_palabras:
+                    excede_palabras.append((idx, n_pal))
+                if n_tok > self.max_tokens:
+                    excede_tokens.append((idx, n_tok))
+        finally:
+            hf_logging.set_verbosity_error()
 
         problemas = {
             "rupturas": rupturas,
