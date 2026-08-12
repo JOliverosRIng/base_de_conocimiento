@@ -1,3 +1,14 @@
+# --- Índice extra para torch CPU ---
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+# --- Entorno de notebooks ---
+jupyter
+ipywidgets
+
+# --- Versiones fijadas para evitar conflictos ---
+numpy<2
+torch
+
 # --- Extracción de PDF y OCR ---
 pymupdf
 pytesseract
@@ -16,3 +27,6 @@ openpyxl
 # --- Base vectorial ---
 faiss-cpu
 sentence-transformers
+
+# --- Barra de progreso ---
+tqdm
