@@ -193,7 +193,7 @@ class CSVProcessor:
             items = self.split_list_value(value_str)
             if len(items) > 1:
                 for item_index, item in enumerate(items):
-                    label = column if item_index == 0 else f"{column} (cont.)"
+                    label = column if item_index == 0 else f"{column} (cont. {item_index + 1})"
                     unit = f"{label}: {item}".strip()
 
                     if self.count_tokens(unit, self.encoder) <= max_tokens:
@@ -205,7 +205,7 @@ class CSVProcessor:
             text_fragments = self.split_text_manually(value_str) or [value_str]
 
             for index, fragment in enumerate(text_fragments):
-                label = column if index == 0 else f"{column} (cont.)"
+                label = column if index == 0 else f"{column} (cont. {index + 1})"
                 unit = f"{label}: {fragment}".strip()
 
                 if self.count_tokens(unit, self.encoder) <= max_tokens:
@@ -228,7 +228,7 @@ class CSVProcessor:
         config = config or self.config
         chunks: list[tuple[list[int], str]] = []
         current_units: list[tuple[int, str]] = []
-        safe_limit = config.max_tokens - 20
+        safe_limit = config.max_tokens
 
         for row_id, unit in units:
             candidate_units = current_units + [(row_id, unit)]
@@ -266,7 +266,7 @@ class CSVProcessor:
         if current_units:
             chunks.append((
                 sorted({r for r, _ in current_units}),
-                "\t".join(text for _, text in current_units),
+                " | ".join(text for _, text in current_units),
             ))
 
         return chunks
@@ -456,9 +456,9 @@ class CSVProcessor:
         print(f"Cobertura por unidades:     {reporte['cobertura_unidades_pct']}%")
 
         if reporte["ok"]:
-            print("✅ Toda la información fue capturada correctamente.")
+            print(" Toda la información fue capturada correctamente.")
         else:
-            print(f"⚠️  Faltan {len(reporte['unidades_faltantes'])} unidades "
+            print(f"Faltan {len(reporte['unidades_faltantes'])} unidades "
                 f"en {len(reporte['filas_con_datos_faltantes'])} filas.")
             for row_id, unit in reporte["unidades_faltantes"][:20]:
                 print(f"  - Fila {row_id}: {unit[:120]}")
@@ -494,6 +494,8 @@ def process_csv_file(
 def main() -> None:
     r = process_csv_file("AIINDEX_clinicaltrials-robotics-csv.csv", fenomeno=1)
     save_chunks_to_json(r, "AIINDEX_clinicaltrials-robotics-chunks.json")
+    verify = CSVProcessor().verify_coverage("AIINDEX_clinicaltrials-robotics-csv.csv", [ChunkData(**rec) for rec in r])
+    CSVProcessor.print_coverage_report(verify)
 
 if __name__ == "__main__":
     main()
