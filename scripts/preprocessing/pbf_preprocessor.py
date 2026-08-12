@@ -27,10 +27,12 @@ class PBFPreprocessor:
         max_palabras: int = 250,
         max_tokens: int = 250,
         separador_pares: str = " | ",
+        debug_huge_token: bool = False,
     ):
         self.max_palabras = max_palabras
         self.max_tokens = max_tokens
         self.separador_pares = separador_pares
+        self.debug_huge_token = debug_huge_token
         # El tokenizer se carga una sola vez al crear el objeto.
         self._tokenizer = AutoTokenizer.from_pretrained(encoder_name)
 
@@ -236,7 +238,21 @@ class PBFPreprocessor:
         oraciones = [o.strip() for o in segmentador.segment(texto) if o.strip()]
 
         # Pre-cálculo de palabras/tokens por oración.
-        info = [(o, len(o.split()), self._contar_tokens(o)) for o in oraciones]
+        info = []
+
+        for o in oraciones:
+            n_tok = self._contar_tokens(o)
+
+            if self.debug_huge_token and n_tok > 512:
+                print("=" * 70)
+                print(
+                    f"[DEBUG_HUGE_TOKEN] Bloque de {n_tok} tokens "
+                    f"({len(o.split())} palabras):"
+                )
+                print(o)
+                print("=" * 70)
+
+            info.append((o, len(o.split()), n_tok))
         n = len(info)
 
         # El solape no puede ser mayor o igual que la ventana.
