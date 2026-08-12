@@ -442,6 +442,11 @@ class TextProcessor:
                     "y_chunk": idx_k1,
                     "palabras_perdidas_aprox": ini_k1 - fin_k,
                     "texto_perdido_inicio": contexto,
+                    # Posiciones en el cuerpo original (en índices de palabra)
+                    # que delimitan el hueco. Las usa la recuperación para
+                    # extraer el texto perdido completo.
+                    "hueco_desde": fin_k,
+                    "hueco_hasta": ini_k1,
                 })
 
         # Validación 2: límites de tokens y palabras.
@@ -493,6 +498,67 @@ class TextProcessor:
         return problemas
 
     # ------------------------------------------------------------------
+    # Recuperación de texto perdido en el chunking
+    # ------------------------------------------------------------------
+    def _recuperar_texto_perdido(self, cuerpo: str, chunks: list[dict],
+                                 reporte: dict) -> list[dict]:
+        """Recupera el texto que se perdió entre chunks consecutivos.
+
+        Por cada ruptura detectada en la validación (un hueco de N palabras
+        del cuerpo original que no quedó en ningún chunk), crea UN chunk
+        adicional con esas N palabras juntas —sea una oración completa o
+        no— y lo inserta entre los dos chunks donde estaba el hueco, para
+        mantener el orden del documento.
+
+        Al final renumera todos los chunks (posicion y chunk_id) para que
+        la secuencia quede limpia y consecutiva.
+
+        Devuelve la lista de chunks aumentada. Si no hay rupturas con
+        palabras perdidas, devuelve la lista original sin cambios."""
+        rupturas = reporte.get("rupturas", [])
+        if not rupturas or not chunks:
+            return chunks
+
+        palabras_orig = cuerpo.split()
+
+        # Preparar las inserciones: (índice destino, texto perdido).
+        inserciones = []
+        for r in rupturas:
+            desde = r.get("hueco_desde")
+            hasta = r.get("hueco_hasta")
+            if desde is None or hasta is None or hasta <= desde:
+                continue  # hueco de 0 palabras: nada que recuperar
+            texto_perdido = " ".join(palabras_orig[desde:hasta]).strip()
+            if not texto_perdido:
+                continue
+            # Se inserta ANTES del chunk siguiente, es decir, entre ambos.
+            inserciones.append((r["y_chunk"], texto_perdido))
+
+        if not inserciones:
+            return chunks
+
+        # Insertar de mayor a menor índice para que los índices previos
+        # sigan siendo válidos mientras se insertan los chunks nuevos.
+        nuevos = list(chunks)
+        for idx_destino, texto_perdido in sorted(inserciones,
+                                                 key=lambda x: -x[0]):
+            # El chunk nuevo hereda la metadata del documento (doc_id,
+            # fuente, formato, fenomeno, idioma, fecha, titulo).
+            base = nuevos[idx_destino] if idx_destino < len(nuevos) else nuevos[-1]
+            recuperado = dict(base)
+            recuperado["texto"] = texto_perdido
+            recuperado["num_tokens"] = self._contar_tokens(texto_perdido)
+            recuperado["num_palabras"] = len(texto_perdido.split())
+            nuevos.insert(idx_destino, recuperado)
+
+        # Renumerar posicion y chunk_id de toda la lista.
+        for pos, c in enumerate(nuevos):
+            c["posicion"] = pos
+            c["chunk_id"] = f"{c['doc_id']}-chunk-{pos:03d}"
+
+        return nuevos
+
+    # ------------------------------------------------------------------
     # API pública
     # ------------------------------------------------------------------
     def procesar_texto(self, texto: str, fuente: str, fenomeno: int,
@@ -534,6 +600,18 @@ class TextProcessor:
 
         # La validación SIEMPRE se ejecuta y se guarda. La bandera solo
         # controla si se imprimen los problemas.
+        self.resultados_validacion_integridad = self._validar_chunks(
+            cuerpo, registros, imprimir=self.imprimir_validacion
+        )
+
+        # Recuperación: si la validación detectó texto perdido entre chunks,
+        # se crea un chunk adicional por cada hueco y se renumera todo.
+        registros = self._recuperar_texto_perdido(
+            cuerpo, registros, self.resultados_validacion_integridad
+        )
+
+        # Revalidar sobre la lista ya recuperada, para que el reporte
+        # refleje el estado FINAL de los chunks entregados.
         self.resultados_validacion_integridad = self._validar_chunks(
             cuerpo, registros, imprimir=self.imprimir_validacion
         )
