@@ -446,12 +446,12 @@ class CSVProcessor:
         records: list[ChunkData] | list[dict[str, object]],
         output_path: str | Path,
     ) -> Path:
-        """Guarda la lista de chunks como un JSON con una lista de objetos."""
+        """Guarda la lista de chunks como JSONL (un objeto JSON por linea)."""
 
         output_path = Path(output_path)
         payload = CSVProcessor._serialize_records(records)
         output_path.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2),
+            "\n".join(json.dumps(r, ensure_ascii=False) for r in payload) + "\n",
             encoding="utf-8",
         )
         return output_path
@@ -539,7 +539,7 @@ def build_chunks(
 
 
 def save_chunks_to_json(records: list[ChunkData], output_path: str | Path) -> Path:
-    """Compatibilidad hacia atras para guardar chunks en JSON."""
+    """Compatibilidad hacia atras para guardar chunks en JSONL."""
 
     return CSVProcessor().save_chunks_to_json(records, output_path)
 
@@ -563,14 +563,14 @@ def process_csv_file(
 def process_csv_file_to_json(
     csv_path: str | Path,
     fenomeno: int | str) -> str:
-    """Procesa un CSV o XLSX y devuelve la lista de chunks como un string JSON."""
+    """Procesa un CSV o XLSX y devuelve los chunks como JSONL (un objeto JSON por linea)."""
     records = process_csv_file(csv_path, fenomeno)
-    return json.dumps(records)
+    return "\n".join(json.dumps(r, ensure_ascii=False) for r in records)
 
 def main() -> None:
-    r = process_csv_file("/home/alejandropenagos/Escritorio/Alejandro/Codefest_Competencia/base_de_conocimiento/CORPUS CODEFEST AD ASTRA 2026/F1_IA_y_Capacidades_Estrategicas/AI_Index_Stanford/recursos/Healthcare_Medicine/datasets/AIINDEX_clinicaltrials-robotics-csv.csv", fenomeno=1)
+    r = process_csv_file("AIINDEX_clinicaltrials-robotics-csv.csv", fenomeno=1)
     print(type(r), len(r))
-    x = process_csv_file_to_json("/home/alejandropenagos/Escritorio/Alejandro/Codefest_Competencia/base_de_conocimiento/CORPUS CODEFEST AD ASTRA 2026/F1_IA_y_Capacidades_Estrategicas/AI_Index_Stanford/recursos/Healthcare_Medicine/datasets/AIINDEX_clinicaltrials-robotics-csv.csv", fenomeno=1)
+    x = process_csv_file_to_json("AIINDEX_clinicaltrials-robotics-csv.csv", fenomeno=1)
     print(type(x), len(x))
     save_chunks_to_json(r, "AIINDEX_clinicaltrials-robotics-chunks.json")
     verify = CSVProcessor().verify_coverage("AIINDEX_clinicaltrials-robotics-csv.csv", [ChunkData(**rec) for rec in r])
