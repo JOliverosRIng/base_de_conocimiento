@@ -56,6 +56,18 @@ class CSVProcessor:
         self.encoder = self.get_encoder(self.config.tokenizer_name)
 
     @staticmethod
+    def _ruta_relativa(ruta: str) -> str:
+        """Devuelve la ruta relativa desde 'CORPUS CODEFEST AD ASTRA 2026'
+        en adelante, con separadores normalizados a '/'. Reproducible entre
+        máquinas. Si no contiene esa carpeta, usa el path absoluto a '/'."""
+        CARPETA_RAIZ = "CORPUS CODEFEST AD ASTRA 2026"
+        ruta_norm = ruta.replace("\\", "/")
+        idx = ruta_norm.find(CARPETA_RAIZ)
+        if idx != -1:
+            return ruta_norm[idx:]
+        return ruta_norm
+    
+    @staticmethod
     def get_encoder(tokenizer_name: str):
         """Devuelve el tokenizer de Hugging Face para el modelo indicado."""
 
@@ -176,6 +188,41 @@ class CSVProcessor:
 
         return [item.strip() for item in value.split("|") if item.strip()]
 
+    @staticmethod
+    def _json_to_string_value(value: object) -> object:
+        """Convierte recursivamente valores JSON a string, manteniendo estructura."""
+
+        if isinstance(value, dict):
+            return {
+                str(key): CSVProcessor._json_to_string_value(item)
+                for key, item in value.items()
+            }
+        if isinstance(value, list):
+            return [CSVProcessor._json_to_string_value(item) for item in value]
+        if value is None:
+            return ""
+        return str(value)
+
+    @staticmethod
+    def json_list_to_string(json_list: list[object]) -> str:
+        """Pasa una lista JSON a string, dejando todos los valores como texto."""
+
+        stringified = CSVProcessor._json_to_string_value(json_list)
+        return json.dumps(stringified, ensure_ascii=False)
+
+    @staticmethod
+    def normalize_value_to_string(value: object) -> str:
+        """Normaliza cualquier valor a string; soporta listas y objetos JSON."""
+
+        if isinstance(value, list):
+            return CSVProcessor.json_list_to_string(value)
+        if isinstance(value, dict):
+            stringified = CSVProcessor._json_to_string_value(value)
+            return json.dumps(stringified, ensure_ascii=False)
+        if value is None or (isinstance(value, float) and pd.isna(value)):
+            return ""
+        return str(value)
+
     def row_to_units(self, row: pd.Series, columns: list[str], max_tokens: int) -> list[str]:
         units: list[str] = []
 
@@ -193,7 +240,7 @@ class CSVProcessor:
             items = self.split_list_value(value_str)
             if len(items) > 1:
                 for item_index, item in enumerate(items):
-                    label = column if item_index == 0 else f"{column} (cont.)"
+                    label = column if item_index == 0 else f"{column} (cont. {item_index + 1})"
                     unit = f"{label}: {item}".strip()
 
                     if self.count_tokens(unit, self.encoder) <= max_tokens:
@@ -205,7 +252,7 @@ class CSVProcessor:
             text_fragments = self.split_text_manually(value_str) or [value_str]
 
             for index, fragment in enumerate(text_fragments):
-                label = column if index == 0 else f"{column} (cont.)"
+                label = column if index == 0 else f"{column} (cont. {index + 1})"
                 unit = f"{label}: {fragment}".strip()
 
                 if self.count_tokens(unit, self.encoder) <= max_tokens:
@@ -228,7 +275,7 @@ class CSVProcessor:
         config = config or self.config
         chunks: list[tuple[list[int], str]] = []
         current_units: list[tuple[int, str]] = []
-        safe_limit = config.max_tokens - 20
+        safe_limit = config.max_tokens
 
         for row_id, unit in units:
             candidate_units = current_units + [(row_id, unit)]
@@ -266,7 +313,7 @@ class CSVProcessor:
         if current_units:
             chunks.append((
                 sorted({r for r, _ in current_units}),
-                "\t".join(text for _, text in current_units),
+                " | ".join(text for _, text in current_units),
             ))
 
         return chunks
@@ -277,6 +324,19 @@ class CSVProcessor:
             return default
         text = str(value).strip()
         return text if text else default
+
+    @staticmethod
+    def _ruta_relativa(ruta: str) -> str:
+        """Devuelve la ruta relativa desde 'CORPUS CODEFEST AD ASTRA 2026'
+        en adelante, con separadores normalizados a '/'. Reproducible entre
+        máquinas. Si no contiene esa carpeta, usa la ruta absoluta normalizada."""
+
+        CARPETA_RAIZ = "CORPUS CODEFEST AD ASTRA 2026"
+        ruta_norm = Path(ruta).resolve().as_posix()
+        idx = ruta_norm.find(CARPETA_RAIZ)
+        if idx != -1:
+            return ruta_norm[idx:]
+        return ruta_norm
 
     @staticmethod
     def _asignar_doc_id(fuente: str) -> str:
@@ -301,7 +361,7 @@ class CSVProcessor:
 
         path = Path(csv_path)
         stat_info = path.stat()
-        fuente = path.name
+        fuente = CSVProcessor._ruta_relativa(str(path))
         titulo = path.stem.replace("_", " ").strip() or path.name
         fecha = datetime.fromtimestamp(stat_info.st_mtime).date().isoformat()
         formato = path.suffix.lstrip(".").lower() or "csv"
@@ -313,6 +373,8 @@ class CSVProcessor:
             "titulo": titulo,
             "fecha": fecha,
         }
+        
+        
 
     def build_chunks(
         self,
@@ -323,12 +385,14 @@ class CSVProcessor:
         """Construye los chunks a partir de un CSV o XLSX."""
 
         config = config or self.config
-        csv_path = Path(csv_path)
+        csv_path = Path(csv_path).resolve()
+        path = self._ruta_relativa(str(csv_path))
+        
         dataframe = self._load_dataframe(csv_path)
 
         metadata_archivo = self.extraer_metadatos_archivo(csv_path)
         doc_id = metadata_archivo["doc_id"]
-        fuente = metadata_archivo["fuente"] or csv_path.name
+        fuente = metadata_archivo["fuente"] or path
         formato = metadata_archivo["formato"] or csv_path.suffix.lstrip(".").lower() or "csv"
         titulo_final = metadata_archivo["titulo"] or csv_path.name
         fecha_final = metadata_archivo["fecha"]
@@ -456,9 +520,9 @@ class CSVProcessor:
         print(f"Cobertura por unidades:     {reporte['cobertura_unidades_pct']}%")
 
         if reporte["ok"]:
-            print("✅ Toda la información fue capturada correctamente.")
+            print(" Toda la información fue capturada correctamente.")
         else:
-            print(f"⚠️  Faltan {len(reporte['unidades_faltantes'])} unidades "
+            print(f"Faltan {len(reporte['unidades_faltantes'])} unidades "
                 f"en {len(reporte['filas_con_datos_faltantes'])} filas.")
             for row_id, unit in reporte["unidades_faltantes"][:20]:
                 print(f"  - Fila {row_id}: {unit[:120]}")
@@ -480,6 +544,12 @@ def save_chunks_to_json(records: list[ChunkData], output_path: str | Path) -> Pa
     return CSVProcessor().save_chunks_to_json(records, output_path)
 
 
+def json_list_to_string(json_list: list[object]) -> str:
+    """Convierte una lista JSON a string con todos sus valores en texto."""
+
+    return CSVProcessor.json_list_to_string(json_list)
+
+
 def process_csv_file(
     csv_path: str | Path,
     fenomeno: int | str,
@@ -490,10 +560,21 @@ def process_csv_file(
     records = processor.build_chunks(csv_path, fenomeno=fenomeno)
     return [asdict(record) for record in records]
 
+def process_csv_file_to_json(
+    csv_path: str | Path,
+    fenomeno: int | str) -> str:
+    """Procesa un CSV o XLSX y devuelve la lista de chunks como un string JSON."""
+    records = process_csv_file(csv_path, fenomeno)
+    return json.dumps(records)
 
 def main() -> None:
-    r = process_csv_file("AIINDEX_clinicaltrials-robotics-csv.csv", fenomeno=1)
+    r = process_csv_file("/home/alejandropenagos/Escritorio/Alejandro/Codefest_Competencia/base_de_conocimiento/CORPUS CODEFEST AD ASTRA 2026/F1_IA_y_Capacidades_Estrategicas/AI_Index_Stanford/recursos/Healthcare_Medicine/datasets/AIINDEX_clinicaltrials-robotics-csv.csv", fenomeno=1)
+    print(type(r), len(r))
+    x = process_csv_file_to_json("/home/alejandropenagos/Escritorio/Alejandro/Codefest_Competencia/base_de_conocimiento/CORPUS CODEFEST AD ASTRA 2026/F1_IA_y_Capacidades_Estrategicas/AI_Index_Stanford/recursos/Healthcare_Medicine/datasets/AIINDEX_clinicaltrials-robotics-csv.csv", fenomeno=1)
+    print(type(x), len(x))
     save_chunks_to_json(r, "AIINDEX_clinicaltrials-robotics-chunks.json")
+    verify = CSVProcessor().verify_coverage("AIINDEX_clinicaltrials-robotics-csv.csv", [ChunkData(**rec) for rec in r])
+    CSVProcessor.print_coverage_report(verify)
 
 if __name__ == "__main__":
     main()

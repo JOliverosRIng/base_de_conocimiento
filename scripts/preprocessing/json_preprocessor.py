@@ -14,12 +14,12 @@ class Chunker:
         self.tokenizer = AutoTokenizer.from_pretrained(
             "intfloat/multilingual-e5-base"
         )
-
+    
     def split(self, document: dict, fenomeno: int):
 
         texto = document["content"]
         metadata = document["metadata"]
-
+        
         idioma = metadata.get("language", "en")
 
         try:
@@ -69,12 +69,12 @@ class Chunker:
                             texto_chunk,
                             add_special_tokens=False
                         )
-                    )
+                    )                    
 
                     chunks.append({
                         "doc_id": doc_id,
                         "chunk_id": f"{doc_id}-chunk-{posicion:03d}",
-                        "fuente": metadata["source"],
+                        "fuente": metadata["fuente"],
                         "formato": metadata["format"],
                         "fenomeno": fenomeno,
                         "posicion": posicion,
@@ -107,7 +107,7 @@ class Chunker:
             chunks.append({
                 "doc_id": doc_id,
                 "chunk_id": f"{doc_id}-chunk-{posicion:03d}",
-                "fuente": metadata["source"],
+                "fuente": metadata["fuente"],
                 "formato": metadata["format"],
                 "fenomeno": fenomeno,
                 "posicion": posicion,
@@ -184,13 +184,41 @@ class JSONExtractor:
     
 
     def extract(self, file_path: str) -> dict:
+
         with open(file_path, "r", encoding="utf-8") as file:
             data = json.load(file)
+
         if isinstance(data, dict):
 
             body_text = data.get("body_text")
 
-            if not body_text:
+            if body_text:
+
+                partes = [body_text.strip()]
+
+                campos_adicionales = [
+                    "url",
+                    "date",
+                    "authors",
+                    "tags"
+                ]
+
+                for campo in campos_adicionales:
+
+                    valor = data.get(campo)
+
+                    if valor is not None and valor != "":
+                        texto_campo = self._aplanar_json(valor)
+
+                        if texto_campo:
+                            partes.append(
+                                f"{campo}: {texto_campo}"
+                            )
+
+                body_text = "\n".join(partes)
+
+            else:
+
                 body_text = self._aplanar_json(data)
 
             title = data.get("title")
@@ -211,16 +239,21 @@ class JSONExtractor:
             date = None
 
         body_text = body_text.strip()
+
         idioma = self._detectar_idioma(body_text)
+
         ruta_relativa = self._ruta_relativa(file_path)
+
         doc_id = self._asignar_doc_id(ruta_relativa)
+
         metadata = {
             "doc_id": doc_id,
             "source": Path(file_path).name,
             "format": "json",
             "title": title,
             "date": date,
-            "language": idioma
+            "language": idioma,
+            "fuente": ruta_relativa
         }
 
         return {
