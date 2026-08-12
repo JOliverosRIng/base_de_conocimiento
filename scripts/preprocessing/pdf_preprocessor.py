@@ -125,7 +125,7 @@ class PDFPreprocessor:
     def _ruta_relativa(ruta: str) -> str:
         """Devuelve la ruta relativa desde la carpeta 'CORPUS CODEFEST AD
         ASTRA 2026' en adelante, con separadores normalizados a '/'. Esto
-        hace que el doc_id y la fuente sean reproducibles entre máquinas
+        hace que el doc_id y la sean reproducibles entre máquinas
         (Windows/Linux) sin depender de dónde esté el proyecto.
 
         Si la ruta no contiene esa carpeta, se usa el path absoluto

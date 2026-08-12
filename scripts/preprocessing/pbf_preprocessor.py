@@ -201,8 +201,31 @@ class PBFPreprocessor:
                     subfrags.append(" ".join(actual))
                     actual, pal, tok = [], 0, 0
                 palabras = parte.split()
-                for i in range(0, len(palabras), self.max_palabras):
-                    subfrags.append(" ".join(palabras[i:i + self.max_palabras]))
+                bloque = []
+                bloque_pal = 0
+                bloque_tok = 0
+
+                for palabra in palabras:
+                    palabra_tok = self._contar_tokens(palabra)
+
+                    if (
+                        bloque
+                        and (
+                            bloque_pal + 1 > self.max_palabras
+                            or bloque_tok + palabra_tok > self.max_tokens
+                         )
+                    ):
+                        subfrags.append(" ".join(bloque))
+                        bloque = []
+                        bloque_pal = 0
+                        bloque_tok = 0
+
+                    bloque.append(palabra)
+                    bloque_pal += 1
+                    bloque_tok += palabra_tok
+
+                if bloque:
+                    subfrags.append(" ".join(bloque))
                 continue
 
             if (pal + n_pal > self.max_palabras) or (tok + n_tok > self.max_tokens):
