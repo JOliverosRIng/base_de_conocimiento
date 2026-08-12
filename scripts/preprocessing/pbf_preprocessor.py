@@ -306,7 +306,7 @@ class PBFPreprocessor:
         """Procesa un PBF completo y devuelve la lista de chunks (dicts)
         con todos los campos del contrato de salida (Tabla 1)."""
         if fuente is None:
-            fuente = ruta_pbf
+            fuente = self._ruta_relativa(ruta_pbf)
 
         cuerpo = self._extraer_texto(ruta_pbf)
         cuerpo = self._limpiar_texto(cuerpo)
@@ -385,8 +385,11 @@ def process_pbf(pbf_path: str, fenomeno: int,
 if __name__ == "__main__":
     preprocesador = PBFPreprocessor()
 
-    ruta = r"C:\Users\Janeth\proyecto\CORPUS CODEFEST AD ASTRA 2026\mapa.pbf"
+    ruta = r"../../src/CORPUS CODEFEST AD ASTRA 2026/F3_Dinamicas_Territoriales/Amazon_Underworld/tiles/3/2/AMAZONUW_3.pbf"
 
-    resultado = preprocesador._ruta_relativa(ruta)
+    resultado = preprocesador.procesar(
+        ruta_pbf=ruta,
+        fenomeno=3
+    )
 
-    print(resultado)
+    print(resultado[0]["fuente"])
