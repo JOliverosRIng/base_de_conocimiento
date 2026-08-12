@@ -1,33 +1,6 @@
 """
 pbf_preprocessor.py
-===================
-
-Módulo de preprocesamiento de PBF (Mapbox Vector Tiles / mapas vectoriales)
-para la Etapa 1 de CODEFEST AD ASTRA 2026.
-
-Uso básico
-----------
-    from pbf_preprocessor import process_pbf
-
-    jsonl = process_pbf("ruta/al/mapa.pbf", fenomeno=3)
-    # 'jsonl' es una cadena en formato JSON Lines: un chunk por línea.
-
-    with open("mapa.jsonl", "w", encoding="utf-8") as f:
-        f.write(jsonl)
-
-La clase PBFPreprocessor encapsula el flujo de las Secciones 2 y 3 del
-documento guía, adaptado a mapas vectoriales (Sección 2.1, apartado PBF):
-    - Decodificación del PBF con mapbox_vector_tile (con descompresión gzip
-      si aplica).
-    - Recorrido de capas y features, leyendo atributos como pares
-      'atributo: valor'.
-    - Deduplicación de elementos repetidos dentro del archivo.
-    - Limpieza, detección de idioma y asignación de doc_id.
-    - Chunking con ventana deslizante (máx. 250 palabras) y solape (máx. 80),
-      respetando completitud lingüística (idéntico al módulo PDF).
-
-Dependencias:
-    pip install mapbox-vector-tile langdetect transformers pysbd
+h ===================
 """
 
 import re
@@ -35,8 +8,8 @@ import json
 import gzip
 import hashlib
 import unicodedata
-
 import mapbox_vector_tile
+
 from langdetect import detect, DetectorFactory
 from transformers import AutoTokenizer
 import pysbd
@@ -47,23 +20,6 @@ DetectorFactory.seed = 0
 
 
 class PBFPreprocessor:
-    """
-    Preprocesa un archivo PBF (Mapbox Vector Tile) y produce chunks con el
-    contrato de salida exigido por la Tabla 1 del documento guía.
-
-    Parámetros del constructor
-    ---------------------------
-    encoder_name : str
-        Encoder de HuggingFace cuyo tokenizer se usa para contar tokens.
-        DEBE ser el mismo encoder con el que luego se generen los embeddings
-        (Sección 4.3). Por defecto, un modelo multilingüe de ejemplo.
-    max_palabras : int
-        Techo de palabras por chunk (por defecto 250).
-    max_tokens : int
-        Techo de tokens por chunk (por defecto 250).
-    separador_pares : str
-        Cadena que une los pares 'atributo: valor' de un mismo elemento.
-    """
 
     def __init__(
         self,
@@ -81,6 +37,27 @@ class PBFPreprocessor:
     # ------------------------------------------------------------------
     # Utilidades internas
     # ------------------------------------------------------------------
+    @staticmethod
+    def _ruta_relativa(ruta: str) -> str:
+        """Devuelve la ruta relativa desde la carpeta
+        'CORPUS CODEFEST AD ASTRA 2026' en adelante.
+        """
+        CARPETA_RAIZ = "CORPUS CODEFEST AD ASTRA 2026"
+
+        # Normalizar separadores.
+        # Windows: \
+        # Linux/Mac: /
+        ruta_norm = ruta.replace("\\", "/")
+
+        idx = ruta_norm.find(CARPETA_RAIZ)
+
+        if idx != -1:
+            return ruta_norm[idx:]
+
+        # Si no encuentra la carpeta raíz,
+        # devuelve la ruta normalizada como respaldo.
+        return ruta_norm
+
     def _contar_tokens(self, texto: str) -> int:
         """Número de tokens según el tokenizer del encoder,
         sin contar tokens especiales ([CLS], [SEP], etc.)."""
@@ -107,8 +84,8 @@ class PBFPreprocessor:
     def _detectar_idioma(texto: str) -> str:
         """Detecta el idioma predominante. Devuelve 'desconocido' si el
         texto es muy corto o si la detección falla."""
-        limpio = texto.strip()
-        if len(limpio.split()) < 5:
+        limpio = texto.strip() # divide por palabras y descarta espacios iniciales y finales
+        if len(limpio.split()) < 5: # si hay menos de 5 palabras, no se puede detectar el idioma
             return "desconocido"
         try:
             return detect(limpio)
@@ -121,8 +98,8 @@ class PBFPreprocessor:
     @staticmethod
     def _leer_bytes(ruta_pbf: str) -> bytes:
         """Lee el PBF crudo; si viene comprimido con gzip, lo descomprime."""
-        with open(ruta_pbf, "rb") as f:
-            datos = f.read()
+        with open(ruta_pbf, "rb") as f: #Abre este archivo (r:read; b:binary) y lo asigna a la variable f
+            datos = f.read() # Lee los datos del archivo
         # Bytes mágicos de gzip: 0x1f 0x8b
         if datos[:2] == b"\x1f\x8b":
             datos = gzip.decompress(datos)
@@ -395,12 +372,21 @@ def process_pbf(pbf_path: str, fenomeno: int,
     return preprocesador.procesar_a_jsonl(pbf_path, fenomeno, fuente)
 
 
+# if __name__ == "__main__":
+#     import sys
+#     if len(sys.argv) > 3:
+#         ruta = sys.argv[1]
+#         fen = int(sys.argv[2])
+#         fuente = sys.argv[3]
+#         print(process_pbf(ruta, fen, fuente))
+#     else:
+#         print("Uso: python pbf_preprocessor.py <ruta_pbf> <fenomeno> <fuente>")
+
 if __name__ == "__main__":
-    import sys
-    if len(sys.argv) > 3:
-        ruta = sys.argv[1]
-        fen = int(sys.argv[2])
-        fuente = sys.argv[3]
-        print(process_pbf(ruta, fen, fuente))
-    else:
-        print("Uso: python pbf_preprocessor.py <ruta_pbf> <fenomeno> <fuente>")
+    preprocesador = PBFPreprocessor()
+
+    ruta = r"C:\Users\Janeth\proyecto\CORPUS CODEFEST AD ASTRA 2026\mapa.pbf"
+
+    resultado = preprocesador._ruta_relativa(ruta)
+
+    print(resultado)
