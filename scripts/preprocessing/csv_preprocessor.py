@@ -176,6 +176,41 @@ class CSVProcessor:
 
         return [item.strip() for item in value.split("|") if item.strip()]
 
+    @staticmethod
+    def _json_to_string_value(value: object) -> object:
+        """Convierte recursivamente valores JSON a string, manteniendo estructura."""
+
+        if isinstance(value, dict):
+            return {
+                str(key): CSVProcessor._json_to_string_value(item)
+                for key, item in value.items()
+            }
+        if isinstance(value, list):
+            return [CSVProcessor._json_to_string_value(item) for item in value]
+        if value is None:
+            return ""
+        return str(value)
+
+    @staticmethod
+    def json_list_to_string(json_list: list[object]) -> str:
+        """Pasa una lista JSON a string, dejando todos los valores como texto."""
+
+        stringified = CSVProcessor._json_to_string_value(json_list)
+        return json.dumps(stringified, ensure_ascii=False)
+
+    @staticmethod
+    def normalize_value_to_string(value: object) -> str:
+        """Normaliza cualquier valor a string; soporta listas y objetos JSON."""
+
+        if isinstance(value, list):
+            return CSVProcessor.json_list_to_string(value)
+        if isinstance(value, dict):
+            stringified = CSVProcessor._json_to_string_value(value)
+            return json.dumps(stringified, ensure_ascii=False)
+        if value is None or (isinstance(value, float) and pd.isna(value)):
+            return ""
+        return str(value)
+
     def row_to_units(self, row: pd.Series, columns: list[str], max_tokens: int) -> list[str]:
         units: list[str] = []
 
@@ -480,6 +515,12 @@ def save_chunks_to_json(records: list[ChunkData], output_path: str | Path) -> Pa
     return CSVProcessor().save_chunks_to_json(records, output_path)
 
 
+def json_list_to_string(json_list: list[object]) -> str:
+    """Convierte una lista JSON a string con todos sus valores en texto."""
+
+    return CSVProcessor.json_list_to_string(json_list)
+
+
 def process_csv_file(
     csv_path: str | Path,
     fenomeno: int | str,
@@ -493,6 +534,9 @@ def process_csv_file(
 
 def main() -> None:
     r = process_csv_file("AIINDEX_clinicaltrials-robotics-csv.csv", fenomeno=1)
+    print(type(r), len(r))
+    x = json_list_to_string(r)
+    print(type(x), len(x))
     save_chunks_to_json(r, "AIINDEX_clinicaltrials-robotics-chunks.json")
     verify = CSVProcessor().verify_coverage("AIINDEX_clinicaltrials-robotics-csv.csv", [ChunkData(**rec) for rec in r])
     CSVProcessor.print_coverage_report(verify)
