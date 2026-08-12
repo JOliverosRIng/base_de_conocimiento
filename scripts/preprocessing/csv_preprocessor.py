@@ -56,6 +56,18 @@ class CSVProcessor:
         self.encoder = self.get_encoder(self.config.tokenizer_name)
 
     @staticmethod
+    def _ruta_relativa(ruta: str) -> str:
+        """Devuelve la ruta relativa desde 'CORPUS CODEFEST AD ASTRA 2026'
+        en adelante, con separadores normalizados a '/'. Reproducible entre
+        máquinas. Si no contiene esa carpeta, usa el path absoluto a '/'."""
+        CARPETA_RAIZ = "CORPUS CODEFEST AD ASTRA 2026"
+        ruta_norm = ruta.replace("\\", "/")
+        idx = ruta_norm.find(CARPETA_RAIZ)
+        if idx != -1:
+            return ruta_norm[idx:]
+        return ruta_norm
+    
+    @staticmethod
     def get_encoder(tokenizer_name: str):
         """Devuelve el tokenizer de Hugging Face para el modelo indicado."""
 
@@ -314,6 +326,19 @@ class CSVProcessor:
         return text if text else default
 
     @staticmethod
+    def _ruta_relativa(ruta: str) -> str:
+        """Devuelve la ruta relativa desde 'CORPUS CODEFEST AD ASTRA 2026'
+        en adelante, con separadores normalizados a '/'. Reproducible entre
+        máquinas. Si no contiene esa carpeta, usa la ruta absoluta normalizada."""
+
+        CARPETA_RAIZ = "CORPUS CODEFEST AD ASTRA 2026"
+        ruta_norm = Path(ruta).resolve().as_posix()
+        idx = ruta_norm.find(CARPETA_RAIZ)
+        if idx != -1:
+            return ruta_norm[idx:]
+        return ruta_norm
+
+    @staticmethod
     def _asignar_doc_id(fuente: str) -> str:
         """Genera un doc_id estable a partir de la fuente."""
 
@@ -336,7 +361,7 @@ class CSVProcessor:
 
         path = Path(csv_path)
         stat_info = path.stat()
-        fuente = path.name
+        fuente = CSVProcessor._ruta_relativa(str(path))
         titulo = path.stem.replace("_", " ").strip() or path.name
         fecha = datetime.fromtimestamp(stat_info.st_mtime).date().isoformat()
         formato = path.suffix.lstrip(".").lower() or "csv"
@@ -348,6 +373,8 @@ class CSVProcessor:
             "titulo": titulo,
             "fecha": fecha,
         }
+        
+        
 
     def build_chunks(
         self,
@@ -358,12 +385,14 @@ class CSVProcessor:
         """Construye los chunks a partir de un CSV o XLSX."""
 
         config = config or self.config
-        csv_path = Path(csv_path)
+        csv_path = Path(csv_path).resolve()
+        path = self._ruta_relativa(str(csv_path))
+        
         dataframe = self._load_dataframe(csv_path)
 
         metadata_archivo = self.extraer_metadatos_archivo(csv_path)
         doc_id = metadata_archivo["doc_id"]
-        fuente = metadata_archivo["fuente"] or csv_path.name
+        fuente = metadata_archivo["fuente"] or path
         formato = metadata_archivo["formato"] or csv_path.suffix.lstrip(".").lower() or "csv"
         titulo_final = metadata_archivo["titulo"] or csv_path.name
         fecha_final = metadata_archivo["fecha"]
@@ -531,11 +560,17 @@ def process_csv_file(
     records = processor.build_chunks(csv_path, fenomeno=fenomeno)
     return [asdict(record) for record in records]
 
+def process_csv_file_to_json(
+    csv_path: str | Path,
+    fenomeno: int | str) -> str:
+    """Procesa un CSV o XLSX y devuelve la lista de chunks como un string JSON."""
+    records = process_csv_file(csv_path, fenomeno)
+    return json.dumps(records)
 
 def main() -> None:
-    r = process_csv_file("AIINDEX_clinicaltrials-robotics-csv.csv", fenomeno=1)
+    r = process_csv_file("/home/alejandropenagos/Escritorio/Alejandro/Codefest_Competencia/base_de_conocimiento/CORPUS CODEFEST AD ASTRA 2026/F1_IA_y_Capacidades_Estrategicas/AI_Index_Stanford/recursos/Healthcare_Medicine/datasets/AIINDEX_clinicaltrials-robotics-csv.csv", fenomeno=1)
     print(type(r), len(r))
-    x = json_list_to_string(r)
+    x = process_csv_file_to_json("/home/alejandropenagos/Escritorio/Alejandro/Codefest_Competencia/base_de_conocimiento/CORPUS CODEFEST AD ASTRA 2026/F1_IA_y_Capacidades_Estrategicas/AI_Index_Stanford/recursos/Healthcare_Medicine/datasets/AIINDEX_clinicaltrials-robotics-csv.csv", fenomeno=1)
     print(type(x), len(x))
     save_chunks_to_json(r, "AIINDEX_clinicaltrials-robotics-chunks.json")
     verify = CSVProcessor().verify_coverage("AIINDEX_clinicaltrials-robotics-csv.csv", [ChunkData(**rec) for rec in r])
