@@ -32,7 +32,7 @@ Preprocesamiento por formato (scripts/preprocessing/*_preprocessor.py, image_rea
 Limpieza, chunking y detección de idioma (text_processor.py, language_detection.py)
         │
         ▼
-Codificación semántica con modelos encoder (encode_db.py)
+Codificación semántica con modelos encoder (embeddings_gpu.py)
         │
         ▼
 Indexación vectorial FAISS (IndexFlatIP, similitud coseno) + metadata.jsonl
