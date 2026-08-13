@@ -436,3 +436,18 @@ def process_pbf(
         fenomeno,
         fuente
     )
+if __name__ == "__main__":
+    import sys
+
+    if len(sys.argv) > 3:
+        ruta = sys.argv[1]
+        fen = int(sys.argv[2])
+        fuente = sys.argv[3]
+
+        print(process_pbf(ruta, fen, fuente))
+
+    else:
+        print(
+            "Uso: python pbf_preprocessor.py "
+            "<ruta_pbf> <fenomeno> <fuente>"
+        )
