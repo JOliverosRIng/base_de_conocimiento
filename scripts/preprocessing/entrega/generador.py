@@ -195,26 +195,66 @@ class FAISSQuery:
 
         return respuesta
 
-RUTA_INDEX = '/entrega/base_vectorial/encoder_multilingual/index.faiss'
-RUTA_METADATA = '/entrega/base_vectorial/encoder_multilingual/metadata.jsonl'
+RUTA_INDEX = 'scripts/preprocessing/entrega/base_vectorial/encoder_multilingual/index.faiss'
+RUTA_METADATA = 'scripts/preprocessing/entrega/base_vectorial/encoder_multilingual/metadata.jsonl'
+
+RUTA_CONSULTAS = 'scripts/preprocessing/entrega/consultas.jsonl'
+RUTA_RESULTADOS = 'scripts/preprocessing/entrega/resultados.jsonl'
+
+
+# -----------------------------------------
+# 1. Crear buscador
+# -----------------------------------------
 
 buscador = FAISSQuery(
-        index_path=RUTA_INDEX,
-        metadata_path=RUTA_METADATA,
-        model_name="intfloat/multilingual-e5-base"
-    )
+    index_path=RUTA_INDEX,
+    metadata_path=RUTA_METADATA,
+    model_name="intfloat/multilingual-e5-base"
+)
 
-query = "add astra 2024"
 
-respuesta = buscador.consultar(
-        query_id="q001",
-        query=query,
-        k=10,
-        numero_documentos=3
-    )
+# -----------------------------------------
+# 2. Procesar consultas
+# -----------------------------------------
 
-print(json.dumps(
-        respuesta,
-        ensure_ascii=False,
-        indent=2
-    ))
+with open(RUTA_CONSULTAS, "r", encoding="utf-8") as archivo_entrada, \
+     open(RUTA_RESULTADOS, "w", encoding="utf-8") as archivo_salida:
+
+    for linea in archivo_entrada:
+
+        # Ignorar líneas vacías
+        if not linea.strip():
+            continue
+
+        # Convertir la línea JSONL a diccionario
+        consulta = json.loads(linea)
+
+        # Obtener información de la consulta
+        query_id = consulta["id"]
+        query = consulta["query"]
+
+        print(f"Procesando {query_id}: {query}")
+
+        # -----------------------------------------
+        # 3. Realizar consulta en FAISS
+        # -----------------------------------------
+
+        respuesta = buscador.consultar(
+            query_id=query_id,
+            query=query,
+            k=10,
+            numero_documentos=3
+        )
+
+        # -----------------------------------------
+        # 4. Escribir resultado en JSONL
+        # -----------------------------------------
+
+        archivo_salida.write(
+            json.dumps(
+                respuesta,
+                ensure_ascii=False
+            ) + "\n"
+        )
+
+print(f"\nResultados guardados en: {RUTA_RESULTADOS}")
