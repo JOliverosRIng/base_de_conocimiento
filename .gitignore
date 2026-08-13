@@ -7,4 +7,6 @@ src/CORPUS CODEFEST AD ASTRA 2026/
 scripts/preprocessing/segmentador copy.ipynb
 scripts/preprocessing/segmentador.ipynb
 .venv
-output/metadata.json
+*/metadata.json
+
+

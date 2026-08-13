@@ -1,33 +1,6 @@
 """
 pbf_preprocessor.py
-===================
-
-Módulo de preprocesamiento de PBF (Mapbox Vector Tiles / mapas vectoriales)
-para la Etapa 1 de CODEFEST AD ASTRA 2026.
-
-Uso básico
-----------
-    from pbf_preprocessor import process_pbf
-
-    jsonl = process_pbf("ruta/al/mapa.pbf", fenomeno=3)
-    # 'jsonl' es una cadena en formato JSON Lines: un chunk por línea.
-
-    with open("mapa.jsonl", "w", encoding="utf-8") as f:
-        f.write(jsonl)
-
-La clase PBFPreprocessor encapsula el flujo de las Secciones 2 y 3 del
-documento guía, adaptado a mapas vectoriales (Sección 2.1, apartado PBF):
-    - Decodificación del PBF con mapbox_vector_tile (con descompresión gzip
-      si aplica).
-    - Recorrido de capas y features, leyendo atributos como pares
-      'atributo: valor'.
-    - Deduplicación de elementos repetidos dentro del archivo.
-    - Limpieza, detección de idioma y asignación de doc_id.
-    - Chunking con ventana deslizante (máx. 250 palabras) y solape (máx. 80),
-      respetando completitud lingüística (idéntico al módulo PDF).
-
-Dependencias:
-    pip install mapbox-vector-tile langdetect transformers pysbd
+h ===================
 """
 
 import re
@@ -35,8 +8,8 @@ import json
 import gzip
 import hashlib
 import unicodedata
-
 import mapbox_vector_tile
+
 from langdetect import detect, DetectorFactory
 from transformers import AutoTokenizer
 import pysbd
@@ -47,23 +20,6 @@ DetectorFactory.seed = 0
 
 
 class PBFPreprocessor:
-    """
-    Preprocesa un archivo PBF (Mapbox Vector Tile) y produce chunks con el
-    contrato de salida exigido por la Tabla 1 del documento guía.
-
-    Parámetros del constructor
-    ---------------------------
-    encoder_name : str
-        Encoder de HuggingFace cuyo tokenizer se usa para contar tokens.
-        DEBE ser el mismo encoder con el que luego se generen los embeddings
-        (Sección 4.3). Por defecto, un modelo multilingüe de ejemplo.
-    max_palabras : int
-        Techo de palabras por chunk (por defecto 250).
-    max_tokens : int
-        Techo de tokens por chunk (por defecto 250).
-    separador_pares : str
-        Cadena que une los pares 'atributo: valor' de un mismo elemento.
-    """
 
     def __init__(
         self,
@@ -71,16 +27,37 @@ class PBFPreprocessor:
         max_palabras: int = 250,
         max_tokens: int = 250,
         separador_pares: str = " | ",
+        debug_huge_token: bool = False,
     ):
         self.max_palabras = max_palabras
         self.max_tokens = max_tokens
         self.separador_pares = separador_pares
+        self.debug_huge_token = debug_huge_token
         # El tokenizer se carga una sola vez al crear el objeto.
         self._tokenizer = AutoTokenizer.from_pretrained(encoder_name)
 
     # ------------------------------------------------------------------
     # Utilidades internas
     # ------------------------------------------------------------------
+    @staticmethod
+    def _ruta_relativa(ruta: str) -> str:
+        """Devuelve la ruta relativa desde la carpeta 'CORPUS CODEFEST AD
+        ASTRA 2026' en adelante, con separadores normalizados a '/'. Esto
+        hace que el doc_id y la sean reproducibles entre máquinas
+        (Windows/Linux) sin depender de dónde esté el proyecto.
+
+        Si la ruta no contiene esa carpeta, se usa el path absoluto
+        normalizado a '/' como respaldo."""
+        CARPETA_RAIZ = "CORPUS CODEFEST AD ASTRA 2026"
+        # Normalizar separadores a '/' (Windows usa '\', Linux usa '/').
+        ruta_norm = ruta.replace("\\", "/")
+
+        idx = ruta_norm.find(CARPETA_RAIZ)
+        if idx != -1:
+            return ruta_norm[idx:]
+        # Respaldo: path absoluto normalizado.
+        return ruta_norm
+
     def _contar_tokens(self, texto: str) -> int:
         """Número de tokens según el tokenizer del encoder,
         sin contar tokens especiales ([CLS], [SEP], etc.)."""
@@ -107,8 +84,8 @@ class PBFPreprocessor:
     def _detectar_idioma(texto: str) -> str:
         """Detecta el idioma predominante. Devuelve 'desconocido' si el
         texto es muy corto o si la detección falla."""
-        limpio = texto.strip()
-        if len(limpio.split()) < 5:
+        limpio = texto.strip() # divide por palabras y descarta espacios iniciales y finales
+        if len(limpio.split()) < 5: # si hay menos de 5 palabras, no se puede detectar el idioma
             return "desconocido"
         try:
             return detect(limpio)
@@ -121,8 +98,8 @@ class PBFPreprocessor:
     @staticmethod
     def _leer_bytes(ruta_pbf: str) -> bytes:
         """Lee el PBF crudo; si viene comprimido con gzip, lo descomprime."""
-        with open(ruta_pbf, "rb") as f:
-            datos = f.read()
+        with open(ruta_pbf, "rb") as f: #Abre este archivo (r:read; b:binary) y lo asigna a la variable f
+            datos = f.read() # Lee los datos del archivo
         # Bytes mágicos de gzip: 0x1f 0x8b
         if datos[:2] == b"\x1f\x8b":
             datos = gzip.decompress(datos)
@@ -222,8 +199,31 @@ class PBFPreprocessor:
                     subfrags.append(" ".join(actual))
                     actual, pal, tok = [], 0, 0
                 palabras = parte.split()
-                for i in range(0, len(palabras), self.max_palabras):
-                    subfrags.append(" ".join(palabras[i:i + self.max_palabras]))
+                bloque = []
+                bloque_pal = 0
+                bloque_tok = 0
+
+                for palabra in palabras:
+                    palabra_tok = self._contar_tokens(palabra)
+
+                    if (
+                        bloque
+                        and (
+                            bloque_pal + 1 > self.max_palabras
+                            or bloque_tok + palabra_tok > self.max_tokens
+                         )
+                    ):
+                        subfrags.append(" ".join(bloque))
+                        bloque = []
+                        bloque_pal = 0
+                        bloque_tok = 0
+
+                    bloque.append(palabra)
+                    bloque_pal += 1
+                    bloque_tok += palabra_tok
+
+                if bloque:
+                    subfrags.append(" ".join(bloque))
                 continue
 
             if (pal + n_pal > self.max_palabras) or (tok + n_tok > self.max_tokens):
@@ -259,7 +259,21 @@ class PBFPreprocessor:
         oraciones = [o.strip() for o in segmentador.segment(texto) if o.strip()]
 
         # Pre-cálculo de palabras/tokens por oración.
-        info = [(o, len(o.split()), self._contar_tokens(o)) for o in oraciones]
+        info = []
+
+        for o in oraciones:
+            n_tok = self._contar_tokens(o)
+
+            if self.debug_huge_token and n_tok > 512:
+                print("=" * 70)
+                print(
+                    f"[DEBUG_HUGE_TOKEN] Bloque de {n_tok} tokens "
+                    f"({len(o.split())} palabras):"
+                )
+                print(o)
+                print("=" * 70)
+
+            info.append((o, len(o.split()), n_tok))
         n = len(info)
 
         # El solape no puede ser mayor o igual que la ventana.
@@ -324,22 +338,28 @@ class PBFPreprocessor:
     # ------------------------------------------------------------------
     # API pública de la clase
     # ------------------------------------------------------------------
-    def procesar(self, ruta_pbf: str, fenomeno: int,
-                 fuente: str | None = None, formato: str = "pbf") -> list[dict]:
-        """Procesa un PBF completo y devuelve la lista de chunks (dicts)
-        con todos los campos del contrato de salida (Tabla 1)."""
-        if fuente is None:
-            fuente = ruta_pbf
+    def procesar(
+        self,
+        ruta_pbf: str,
+        fenomeno: int,
+        fuente: str | None = None,
+        formato: str = "pbf"
+    ) -> list[dict]:
+
+        fuente = self._ruta_relativa(ruta_pbf)
 
         cuerpo = self._extraer_texto(ruta_pbf)
         cuerpo = self._limpiar_texto(cuerpo)
+
         idioma = self._detectar_idioma(cuerpo)
         doc_id = self._asignar_doc_id(fuente)
 
         chunks_texto = self._chunk_texto(cuerpo, idioma)
 
         registros = []
+
         for posicion, texto_chunk in enumerate(chunks_texto):
+
             registros.append({
                 "doc_id": doc_id,
                 "chunk_id": f"{doc_id}-chunk-{posicion:03d}",
@@ -351,9 +371,10 @@ class PBFPreprocessor:
                 "num_palabras": len(texto_chunk.split()),
                 "texto": texto_chunk,
                 "idioma": idioma,
-                "fecha": "",     # los PBF no traen fecha interna
-                "titulo": "",    # ni título interno
+                "fecha": "",
+                "titulo": "",
             })
+
         return registros
 
     def procesar_a_jsonl(self, ruta_pbf: str, fenomeno: int,
@@ -367,40 +388,66 @@ class PBFPreprocessor:
 # ----------------------------------------------------------------------
 # Función de salida: process_pbf
 # ----------------------------------------------------------------------
-def process_pbf(pbf_path: str, fenomeno: int,
-                fuente: str | None = None,
-                encoder_name: str = "intfloat/multilingual-e5-base") -> str:
+
+def process_pbf(
+    pbf_path: str,
+    fenomeno: int,
+    fuente: str | None = None,
+    encoder_name: str = "intfloat/multilingual-e5-base",
+    debug_huge_token: bool = False
+) -> str:
     """
     Procesa un archivo PBF y devuelve el JSONL con los chunks del archivo.
 
     Parámetros
     ----------
     pbf_path : str
-        Ruta al archivo PBF (Mapbox Vector Tile) a procesar.
+        Ruta al archivo PBF a procesar.
+
     fenomeno : int
         Fenómeno temático al que pertenece el documento (1, 2 o 3).
+
     fuente : str, opcional
-        Nombre/URL de la fuente. Si no se pasa, se usa la ruta del archivo.
+        Fuente del documento. Si no se proporciona, se utiliza la
+        ruta relativa del archivo.
+
     encoder_name : str, opcional
         Encoder de HuggingFace cuyo tokenizer se usa para contar tokens.
         Debe coincidir con el encoder usado para generar los embeddings.
 
+    debug_huge_token : bool, opcional
+        Si es True, imprime los bloques que superan 512 tokens para
+        diagnóstico.
+
     Retorna
     -------
     str
-        Cadena en formato JSON Lines (un chunk por línea), con los campos
-        de la Tabla 1 del documento guía.
+        Cadena en formato JSON Lines (un chunk por línea). Cada línea es
+        un objeto JSON con los campos de la Tabla 1 del documento guía.
     """
-    preprocesador = PBFPreprocessor(encoder_name=encoder_name)
-    return preprocesador.procesar_a_jsonl(pbf_path, fenomeno, fuente)
 
+    preprocesador = PBFPreprocessor(
+        encoder_name=encoder_name,
+        debug_huge_token=debug_huge_token
+    )
 
+    return preprocesador.procesar_a_jsonl(
+        pbf_path,
+        fenomeno,
+        fuente
+    )
 if __name__ == "__main__":
     import sys
+
     if len(sys.argv) > 3:
         ruta = sys.argv[1]
         fen = int(sys.argv[2])
         fuente = sys.argv[3]
+
         print(process_pbf(ruta, fen, fuente))
+
     else:
-        print("Uso: python pbf_preprocessor.py <ruta_pbf> <fenomeno> <fuente>")
+        print(
+            "Uso: python pbf_preprocessor.py "
+            "<ruta_pbf> <fenomeno> <fuente>"
+        )
