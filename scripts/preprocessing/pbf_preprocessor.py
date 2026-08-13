@@ -41,23 +41,21 @@ class PBFPreprocessor:
     # ------------------------------------------------------------------
     @staticmethod
     def _ruta_relativa(ruta: str) -> str:
-        """Devuelve la ruta relativa desde la carpeta
-        'CORPUS CODEFEST AD ASTRA 2026' en adelante.
-        """
-        CARPETA_RAIZ = "CORPUS CODEFEST AD ASTRA 2026"
+        """Devuelve la ruta relativa desde la carpeta 'CORPUS CODEFEST AD
+        ASTRA 2026' en adelante, con separadores normalizados a '/'. Esto
+        hace que el doc_id y la sean reproducibles entre máquinas
+        (Windows/Linux) sin depender de dónde esté el proyecto.
 
-        # Normalizar separadores.
-        # Windows: \
-        # Linux/Mac: /
+        Si la ruta no contiene esa carpeta, se usa el path absoluto
+        normalizado a '/' como respaldo."""
+        CARPETA_RAIZ = "CORPUS CODEFEST AD ASTRA 2026"
+        # Normalizar separadores a '/' (Windows usa '\', Linux usa '/').
         ruta_norm = ruta.replace("\\", "/")
 
         idx = ruta_norm.find(CARPETA_RAIZ)
-
         if idx != -1:
             return ruta_norm[idx:]
-
-        # Si no encuentra la carpeta raíz,
-        # devuelve la ruta normalizada como respaldo.
+        # Respaldo: path absoluto normalizado.
         return ruta_norm
 
     def _contar_tokens(self, texto: str) -> int:
@@ -340,22 +338,28 @@ class PBFPreprocessor:
     # ------------------------------------------------------------------
     # API pública de la clase
     # ------------------------------------------------------------------
-    def procesar(self, ruta_pbf: str, fenomeno: int,
-                 fuente: str | None = None, formato: str = "pbf") -> list[dict]:
-        """Procesa un PBF completo y devuelve la lista de chunks (dicts)
-        con todos los campos del contrato de salida (Tabla 1)."""
-        if fuente is None:
-            fuente = self._ruta_relativa(ruta_pbf)
+    def procesar(
+        self,
+        ruta_pbf: str,
+        fenomeno: int,
+        fuente: str | None = None,
+        formato: str = "pbf"
+    ) -> list[dict]:
+
+        fuente = self._ruta_relativa(ruta_pbf)
 
         cuerpo = self._extraer_texto(ruta_pbf)
         cuerpo = self._limpiar_texto(cuerpo)
+
         idioma = self._detectar_idioma(cuerpo)
         doc_id = self._asignar_doc_id(fuente)
 
         chunks_texto = self._chunk_texto(cuerpo, idioma)
 
         registros = []
+
         for posicion, texto_chunk in enumerate(chunks_texto):
+
             registros.append({
                 "doc_id": doc_id,
                 "chunk_id": f"{doc_id}-chunk-{posicion:03d}",
@@ -367,9 +371,10 @@ class PBFPreprocessor:
                 "num_palabras": len(texto_chunk.split()),
                 "texto": texto_chunk,
                 "idioma": idioma,
-                "fecha": "",     # los PBF no traen fecha interna
-                "titulo": "",    # ni título interno
+                "fecha": "",
+                "titulo": "",
             })
+
         return registros
 
     def procesar_a_jsonl(self, ruta_pbf: str, fenomeno: int,
@@ -383,52 +388,51 @@ class PBFPreprocessor:
 # ----------------------------------------------------------------------
 # Función de salida: process_pbf
 # ----------------------------------------------------------------------
-def process_pbf(pbf_path: str, fenomeno: int,
-                fuente: str | None = None,
-                encoder_name: str = "intfloat/multilingual-e5-base") -> str:
+
+def process_pbf(
+    pbf_path: str,
+    fenomeno: int,
+    fuente: str | None = None,
+    encoder_name: str = "intfloat/multilingual-e5-base",
+    debug_huge_token: bool = False
+) -> str:
     """
     Procesa un archivo PBF y devuelve el JSONL con los chunks del archivo.
 
     Parámetros
     ----------
     pbf_path : str
-        Ruta al archivo PBF (Mapbox Vector Tile) a procesar.
+        Ruta al archivo PBF a procesar.
+
     fenomeno : int
         Fenómeno temático al que pertenece el documento (1, 2 o 3).
+
     fuente : str, opcional
-        Nombre/URL de la fuente. Si no se pasa, se usa la ruta del archivo.
+        Fuente del documento. Si no se proporciona, se utiliza la
+        ruta relativa del archivo.
+
     encoder_name : str, opcional
         Encoder de HuggingFace cuyo tokenizer se usa para contar tokens.
         Debe coincidir con el encoder usado para generar los embeddings.
 
+    debug_huge_token : bool, opcional
+        Si es True, imprime los bloques que superan 512 tokens para
+        diagnóstico.
+
     Retorna
     -------
     str
-        Cadena en formato JSON Lines (un chunk por línea), con los campos
-        de la Tabla 1 del documento guía.
+        Cadena en formato JSON Lines (un chunk por línea). Cada línea es
+        un objeto JSON con los campos de la Tabla 1 del documento guía.
     """
-    preprocesador = PBFPreprocessor(encoder_name=encoder_name)
-    return preprocesador.procesar_a_jsonl(pbf_path, fenomeno, fuente)
 
-
-# if __name__ == "__main__":
-#     import sys
-#     if len(sys.argv) > 3:
-#         ruta = sys.argv[1]
-#         fen = int(sys.argv[2])
-#         fuente = sys.argv[3]
-#         print(process_pbf(ruta, fen, fuente))
-#     else:
-#         print("Uso: python pbf_preprocessor.py <ruta_pbf> <fenomeno> <fuente>")
-
-if __name__ == "__main__":
-    preprocesador = PBFPreprocessor()
-
-    ruta = r"../../src/CORPUS CODEFEST AD ASTRA 2026/F3_Dinamicas_Territoriales/Amazon_Underworld/tiles/3/2/AMAZONUW_3.pbf"
-
-    resultado = preprocesador.procesar(
-        ruta_pbf=ruta,
-        fenomeno=3
+    preprocesador = PBFPreprocessor(
+        encoder_name=encoder_name,
+        debug_huge_token=debug_huge_token
     )
 
-    print(resultado[0]["fuente"])
+    return preprocesador.procesar_a_jsonl(
+        pbf_path,
+        fenomeno,
+        fuente
+    )
