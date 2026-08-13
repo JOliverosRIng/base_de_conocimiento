@@ -9,12 +9,8 @@ Pipeline para construir una **base de conocimiento vectorial** a partir de un co
 - [Estructura del repositorio](#estructura-del-repositorio)
 - [Requisitos](#requisitos)
 - [Instalación](#instalación)
-- [Uso](#uso)
 - [Datos](#datos)
-- [Documentación del proyecto](#documentación-del-proyecto)
-- [Estado del proyecto](#estado-del-proyecto)
 - [Equipo](#equipo)
-- [Licencia](#licencia)
 
 ## Descripción
 
