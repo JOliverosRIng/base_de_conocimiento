@@ -1,0 +1,7 @@
+Metadata-Version: 2.4
+Name: nombre_paquete
+Version: 0.1.0
+Summary: Descripción del proyecto
+Author-email: autor1 <correo@correo.com>
+Requires-Python: >3.8
+Requires-Dist: numpy
